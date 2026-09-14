@@ -1,0 +1,29 @@
+# CMake and Ninja build outputs
+/build/
+/cmake-build-*/
+/out/
+CMakeUserPresets.json
+compile_commands.json
+
+# Firmware artifacts
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.lst
+*.o
+*.obj
+*.d
+*.su
+
+# IDE and editor-local files
+/.idea/
+/.vscode/
+*.user
+*.user.*
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
