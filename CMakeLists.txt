@@ -34,7 +34,10 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME}
         BSP/motor.c
-        BSP/motor.h)
+        BSP/motor.h
+        BSP/servo.c
+        BSP/servo.h
+)
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
