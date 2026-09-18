@@ -37,6 +37,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         BSP/motor.h
         BSP/servo.c
         BSP/servo.h
+        BSP/IMU.c
+        BSP/IMU.h
 )
 
 # Add STM32CubeMX generated sources
