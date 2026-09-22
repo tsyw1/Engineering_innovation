@@ -1,5 +1,5 @@
-#ifndef ENGINEERING_INNOVATION_IMU_H
-#define ENGINEERING_INNOVATION_IMU_H
+#ifndef ENGINEERING_INNOVATION_IMU_IIC_H
+#define ENGINEERING_INNOVATION_IMU_IIC_H
 
 #include "main.h"
 
@@ -87,4 +87,4 @@ jy901s_result_t jy901s_read_quaternion(const jy901s_t *sensor,
 jy901s_result_t jy901s_read_all(const jy901s_t *sensor,
                                 jy901s_data_t *data);
 
-#endif // ENGINEERING_INNOVATION_IMU_H
+#endif // ENGINEERING_INNOVATION_IMU_IIC_H

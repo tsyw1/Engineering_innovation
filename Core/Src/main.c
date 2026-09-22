@@ -26,6 +26,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "servo.h"
+#include "QR.h"
+#include "screen.h"
+#include "IMU_UART.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,6 +50,10 @@
 
 /* USER CODE BEGIN PV */
 servo_t servo_1 , servo_2 ;
+screen_t screen;
+QR_TaskCode_t qr_task;
+QR_Status_t qr_error;
+jy901s_uart_t imu_uart;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,9 +102,13 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   MX_USART6_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   servo_init(&servo_1 , &htim1 , TIM_CHANNEL_1 );
   servo_init(&servo_2 , &htim1 , TIM_CHANNEL_2 );
+  (void)screen_init(&screen, &huart5);
+  (void)QR_Init();
+  (void)jy901s_uart_init(&imu_uart, &huart1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -107,6 +118,42 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    if (QR_GetTask(&qr_task) == QR_STATUS_OK)
+    {
+      if (screen_show_task_code(&screen, qr_task.raw_code) == SCREEN_OK)
+      {
+        QR_ClearTask();
+      }
+    }
+    else if (QR_IsErrorReady() != 0U)
+    {
+      qr_error = QR_GetError();
+
+      if ((qr_error == QR_STATUS_FORMAT_ERROR) &&
+          (screen_set_text(&screen, SCREEN_TASK_TEXT_CONTROL,
+                           "QR FORMAT ERROR") == SCREEN_OK))
+      {
+        QR_ClearError();
+      }
+      else if ((qr_error == QR_STATUS_COLOR_ERROR) &&
+               (screen_set_text(&screen, SCREEN_TASK_TEXT_CONTROL,
+                                "QR COLOR ERROR") == SCREEN_OK))
+      {
+        QR_ClearError();
+      }
+      else if ((qr_error == QR_STATUS_POSITION_ERROR) &&
+               (screen_set_text(&screen, SCREEN_TASK_TEXT_CONTROL,
+                                "QR POSITION ERROR") == SCREEN_OK))
+      {
+        QR_ClearError();
+      }
+      else if ((qr_error == QR_STATUS_HAL_ERROR) &&
+               (screen_set_text(&screen, SCREEN_TASK_TEXT_CONTROL,
+                                "QR UART ERROR") == SCREEN_OK))
+      {
+        QR_ClearError();
+      }
+    }
   }
   /* USER CODE END 3 */
 }

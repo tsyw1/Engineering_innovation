@@ -43,10 +43,8 @@ void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  // TIM1 时钟为 168 MHz，分频后得到 1 MHz（1 个计数 = 1 us）。
   htim1.Init.Prescaler = 167;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  // 20 ms PWM 周期，对应标准模拟舵机的 50 Hz 控制频率。
   htim1.Init.Period = 19999;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;

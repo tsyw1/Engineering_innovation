@@ -1,4 +1,4 @@
-#include "IMU.h"
+#include "IMU_IIC.h"
 
 #include <string.h>
 
@@ -135,6 +135,9 @@ static void jy901s_parse_quaternion(const uint8_t *buffer,
             (float)data->quaternion_raw[index] * JY901S_QUATERNION_SCALE;
     }
 }
+
+
+
 
 jy901s_result_t jy901s_init(jy901s_t *sensor,
                             I2C_HandleTypeDef *hi2c,
