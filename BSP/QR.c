@@ -84,7 +84,7 @@ HAL_StatusTypeDef QR_StartReceive(void)
     HAL_StatusTypeDef status;
 
     s_rx_byte = 0U;
-    status = HAL_UART_Receive_IT(&huart6, &s_rx_byte, 1U);
+    status = HAL_UART_Receive_IT(&huart3, &s_rx_byte, 1U);
     if (status != HAL_OK)
     {
         s_last_status = QR_STATUS_HAL_ERROR;
@@ -271,15 +271,15 @@ QR_Status_t QR_GetLastStatus(void)
     return s_last_status;
 }
 
-/* USART6 接收完成后由 HAL 调用；二维码模块只占用 USART6。 */
+/* USART3 接收完成后由 HAL 调用；USART3 连接 MaixCAM-Pro UART1。 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     jy901s_uart_on_rx_complete(huart);
 
-    if (huart == &huart6)
+    if (huart == &huart3)
     {
         QR_ProcessByte(s_rx_byte);
-        if (HAL_UART_Receive_IT(&huart6, &s_rx_byte, 1U) != HAL_OK)
+        if (HAL_UART_Receive_IT(&huart3, &s_rx_byte, 1U) != HAL_OK)
         {
             s_last_status = QR_STATUS_HAL_ERROR;
             s_error_status = QR_STATUS_HAL_ERROR;
@@ -292,7 +292,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     jy901s_uart_on_error(huart);
 
-    if (huart == &huart6)
+    if (huart == &huart3)
     {
         s_rx_length = 0U;
         (void)QR_StartReceive();

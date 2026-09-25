@@ -206,6 +206,11 @@ void USART1_IRQHandler(void)
   HAL_UART_IRQHandler(&huart1);
 }
 
+void USART3_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart3);
+}
+
 void USART6_IRQHandler(void)
 {
   HAL_UART_IRQHandler(&huart6);

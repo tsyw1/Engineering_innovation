@@ -9,7 +9,7 @@
 // 本文件负责生成/解析上述电机协议，CAN 转 TTL 模块自身的串口协议由回调适配。
 //
 
-#include "motor.h"
+#include "motor_can.h"
 
 #include <string.h>
 
@@ -41,6 +41,31 @@
 #define MOTOR_CMD_READ_ALL_STATE        0x3CU
 
 #define MOTOR_MULTI_COMMAND_MAX_SIZE    64U
+
+HAL_StatusTypeDef motor_can_ttl_send_command(UART_HandleTypeDef *huart,
+                                             uint8_t address,
+                                             const uint8_t *command,
+                                             uint8_t length,
+                                             uint32_t timeout_ms)
+{
+    uint8_t uart_frame[1U + 32U];
+
+    /* 地址 0 是广播地址，地址 1-255 用于单台电机。 */
+    if ((huart == NULL) || (command == NULL) ||
+        (length == 0U) || (length > 32U))
+    {
+        return HAL_ERROR;
+    }
+
+    /* ZDT V4.0 模块 TTL 侧使用“地址+标准命令”，不需要额外帧头。 */
+    uart_frame[0] = address;
+    memcpy(&uart_frame[1], command, length);
+
+    return HAL_UART_Transmit(huart,
+                             uart_frame,
+                             (uint16_t)(length + 1U),
+                             timeout_ms);
+}
 
 /**
  * @brief 尝试占用共享串口总线。
@@ -166,7 +191,33 @@ static motor_result_t motor_bus_send_command(motor_bus_t *bus,
     if ((bus == NULL) || (bus->huart == NULL) || (bus->send_can_frame == NULL) ||
         (command == NULL) || (command_length < 2U))
     {
-        return MOTOR_INVALID_PARAM;
+        /* ZDT CAN 转 TTL 模块使用完整串口命令，不需要 CAN 分包。 */
+        if ((bus == NULL) || (bus->huart == NULL) ||
+            (bus->send_ttl_command == NULL) || (command == NULL) ||
+            (command_length < 2U))
+        {
+            return MOTOR_INVALID_PARAM;
+        }
+
+        result = motor_bus_lock(bus);
+        if (result != MOTOR_OK)
+        {
+            return result;
+        }
+
+        hal_status = bus->send_ttl_command(bus->huart,
+                                            address,
+                                            command,
+                                            command_length,
+                                            bus->tx_timeout_ms);
+        motor_bus_unlock(bus);
+
+        if (hal_status == HAL_OK)
+        {
+            return MOTOR_OK;
+        }
+
+        return (hal_status == HAL_BUSY) ? MOTOR_BUSY : MOTOR_ERROR;
     }
 
     result = motor_bus_lock(bus);
@@ -251,6 +302,25 @@ motor_result_t motor_bus_init(motor_bus_t *bus,
     memset(bus, 0, sizeof(*bus));
     bus->huart = huart;
     bus->send_can_frame = send_can_frame;
+    bus->tx_timeout_ms = tx_timeout_ms;
+
+    return MOTOR_OK;
+}
+
+motor_result_t motor_bus_init_ttl(motor_bus_t *bus,
+                                  UART_HandleTypeDef *huart,
+                                  motor_ttl_send_callback_t send_ttl_command,
+                                  uint32_t tx_timeout_ms)
+{
+    if ((bus == NULL) || (huart == NULL) || (send_ttl_command == NULL))
+    {
+        return MOTOR_INVALID_PARAM;
+    }
+
+    // ZDT CAN 转 TTL 模块由串口侧接收完整的地址+命令帧。
+    memset(bus, 0, sizeof(*bus));
+    bus->huart = huart;
+    bus->send_ttl_command = send_ttl_command;
     bus->tx_timeout_ms = tx_timeout_ms;
 
     return MOTOR_OK;

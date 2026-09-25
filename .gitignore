@@ -27,3 +27,7 @@ compile_commands.json
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Python caches
+__pycache__/
+*.pyc

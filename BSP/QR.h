@@ -39,7 +39,7 @@ typedef struct
     uint8_t valid;
 } QR_TaskCode_t;
 
-/* 在 MX_USART6_UART_Init() 之后调用，启动二维码串口的单字节中断接收。 */
+/* 在 MX_USART3_UART_Init() 之后调用，启动 MaixCAM 二维码串口接收。 */
 HAL_StatusTypeDef QR_Init(void);
 HAL_StatusTypeDef QR_StartReceive(void);
 

@@ -124,6 +124,32 @@ typedef HAL_StatusTypeDef (*motor_can_send_callback_t)(UART_HandleTypeDef *huart
                                                         uint8_t length,
                                                         uint32_t timeout_ms);
 
+/**
+ * @brief ZDT CAN 转 TTL 模块的串口命令发送回调。
+ *
+ * 该模块的 TTL 侧使用标准 ZDT 串口命令格式：
+ *     电机地址 + 功能码 + 命令参数 + 0x6B
+ *
+ * 与原生 CAN 回调不同，这里传入的是完整命令，不需要拆成 8 字节 CAN 帧。
+ */
+typedef HAL_StatusTypeDef (*motor_ttl_send_callback_t)(UART_HandleTypeDef *huart,
+                                                        uint8_t address,
+                                                        const uint8_t *command,
+                                                        uint8_t length,
+                                                        uint32_t timeout_ms);
+
+/**
+ * @brief 通过张大头 ZDT V4.0 CAN 转 TTL 模块发送完整串口命令。
+ *
+ * TTL 侧帧格式为：电机地址 + 功能码 + 参数 + 0x6B。
+ * 该函数内部使用 USART2（或调用者传入的 UART 句柄）发送，不需要额外帧头。
+ */
+HAL_StatusTypeDef motor_can_ttl_send_command(UART_HandleTypeDef *huart,
+                                             uint8_t address,
+                                             const uint8_t *command,
+                                             uint8_t length,
+                                             uint32_t timeout_ms);
+
 typedef struct
 {
     motor_bus_t *bus;                         // 所属共享总线
@@ -149,6 +175,7 @@ struct motor_bus
 {
     UART_HandleTypeDef *huart;                 // 六台电机共用的转换模块串口
     motor_can_send_callback_t send_can_frame; // 转换模块发送适配函数
+    motor_ttl_send_callback_t send_ttl_command; // ZDT CAN 转 TTL 标准串口命令适配函数
     motor_t *motors[MOTOR_MAX_COUNT];          // 已注册电机指针表
     uint32_t tx_timeout_ms;                    // 单个 CAN 帧的串口发送超时
     uint8_t motor_count;                       // 当前已注册电机数量
@@ -160,6 +187,12 @@ motor_result_t motor_bus_init(motor_bus_t *bus,
                               UART_HandleTypeDef *huart,
                               motor_can_send_callback_t send_can_frame,
                               uint32_t tx_timeout_ms);
+
+/** 初始化 ZDT CAN 转 TTL 模块总线，发送完整的地址+命令串口帧。 */
+motor_result_t motor_bus_init_ttl(motor_bus_t *bus,
+                                  UART_HandleTypeDef *huart,
+                                  motor_ttl_send_callback_t send_ttl_command,
+                                  uint32_t tx_timeout_ms);
 
 /** 将一台电机及其 ID 注册到共享总线，六台电机分别调用一次。 */
 motor_result_t motor_init(motor_t *motor, motor_bus_t *bus, uint8_t id);

@@ -33,8 +33,8 @@ enable_language(C ASM)
 
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME}
-        BSP/motor.c
-        BSP/motor.h
+        BSP/motor_can.c
+        BSP/motor_can.h
         BSP/servo.c
         BSP/servo.h
         BSP/IMU_IIC.c
