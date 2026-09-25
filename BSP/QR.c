@@ -1,5 +1,6 @@
 #include "QR.h"
 #include "IMU_UART.h"
+#include "motor_TTL.h"
 #include "usart.h"
 
 #include <string.h>
@@ -275,6 +276,7 @@ QR_Status_t QR_GetLastStatus(void)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     jy901s_uart_on_rx_complete(huart);
+    motor_ttl_on_rx_complete(huart);
 
     if (huart == &huart3)
     {
@@ -291,6 +293,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     jy901s_uart_on_error(huart);
+    motor_ttl_on_error(huart);
 
     if (huart == &huart3)
     {

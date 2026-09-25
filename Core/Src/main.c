@@ -22,6 +22,7 @@
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
+#include "motor_TTL.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -45,6 +46,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+/* 六台电机共用 USART2；这里只做对象注册，不在启动时自动运动。 */
+static motor_ttl_bus_t s_motor_ttl_bus;
+static motor_ttl_motor_t s_motor_ttl_motors[MOTOR_TTL_MAX_COUNT];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -89,6 +93,24 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  if (motor_ttl_init(&s_motor_ttl_bus, &huart2, 20U) != MOTOR_TTL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* 按电机地址 1~6 注册；注册不会发送使能、速度或位置命令。 */
+  for (uint8_t motor_index = 0U;
+       motor_index < MOTOR_TTL_MAX_COUNT;
+       motor_index++)
+  {
+    if (motor_ttl_motor_init(&s_motor_ttl_motors[motor_index],
+                             &s_motor_ttl_bus,
+                             (uint8_t)(motor_index + 1U)) != MOTOR_TTL_OK)
+    {
+      Error_Handler();
+    }
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
