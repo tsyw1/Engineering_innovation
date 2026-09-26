@@ -38,6 +38,5 @@ the form `XXX+XXX+XXX+XXX`, for example `123+231+312+132`.
 ## Running
 
 Copy `maixcam_qr_uart.py` to the MaixCAM-Pro, then run it with MaixPy v4 from
-MaixVision or the device terminal. Preview drawing is disabled by default to
-maximize frame rate; set `SHOW_PREVIEW = True` when visual debugging is
-needed.
+MaixVision or the device terminal. The live camera preview is enabled by
+default and shows the QR outline and decoded payload.

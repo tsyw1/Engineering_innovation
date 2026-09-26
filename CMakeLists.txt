@@ -37,6 +37,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         BSP/motor_can.h
         BSP/motor_TTL.c
         BSP/motor_TTL.h
+        BSP/chassis_mecanum.c
+        BSP/chassis_mecanum.h
         BSP/servo.c
         BSP/servo.h
         BSP/IMU_IIC.c
