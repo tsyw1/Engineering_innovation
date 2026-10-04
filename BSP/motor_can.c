@@ -32,8 +32,12 @@
 #define MOTOR_CMD_POSITION              0xFDU
 #define MOTOR_CMD_STOP                  0xFEU
 #define MOTOR_CMD_TRIGGER_SYNC          0xFFU
+#define MOTOR_INIT_ENABLE_SETTLE_MS    100U
+#define MOTOR_INIT_DISABLE_SETTLE_MS   100U
 
 static motor_bus_t *s_active_bus;
+
+static motor_result_t motor_run_init_sequence(motor_t *motor);
 
 static motor_result_t motor_bus_lock(motor_bus_t *bus)
 {
@@ -365,11 +369,19 @@ bool motor_bus_get_discovered_id(const motor_bus_t *bus, uint8_t *id)
 
 motor_result_t motor_init(motor_t *motor, motor_bus_t *bus, uint8_t id)
 {
-    if ((motor == NULL) || (bus == NULL) || (id == 0U) ||
+    if ((motor == NULL) || (bus == NULL) || (id == 0U))
+    {
+        return MOTOR_INVALID_PARAM;
+    }
+    if ((bus->hcan == NULL) ||
         (bus->motor_count >= MOTOR_MAX_COUNT) ||
         (motor_bus_find_motor(bus, id) != NULL))
     {
         return MOTOR_INVALID_PARAM;
+    }
+    if (HAL_CAN_GetState(bus->hcan) != HAL_CAN_STATE_LISTENING)
+    {
+        return MOTOR_NOT_READY;
     }
 
     memset(motor, 0, sizeof(*motor));
@@ -377,6 +389,18 @@ motor_result_t motor_init(motor_t *motor, motor_bus_t *bus, uint8_t id)
     motor->id = id;
     motor->last_reply = MOTOR_REPLY_NONE;
     bus->motors[bus->motor_count++] = motor;
+
+    /* 统一要求先启动 CAN，再注册电机并执行上电恢复流程。 */
+    {
+        motor_result_t result = motor_run_init_sequence(motor);
+        if (result != MOTOR_OK)
+        {
+            bus->motors[--bus->motor_count] = NULL;
+            memset(motor, 0, sizeof(*motor));
+            return result;
+        }
+    }
+
     return MOTOR_OK;
 }
 
@@ -399,6 +423,39 @@ motor_result_t motor_enable(motor_t *motor, bool enable, motor_sync_t sync)
                                   motor->id,
                                   command,
                                   sizeof(command));
+}
+
+static motor_result_t motor_run_init_sequence(motor_t *motor)
+{
+    motor_result_t result;
+
+    if ((motor == NULL) || (motor->bus == NULL))
+    {
+        return MOTOR_INVALID_PARAM;
+    }
+
+    result = motor_enable(motor, true, MOTOR_EXECUTE_NOW);
+    if (result != MOTOR_OK)
+    {
+        return result;
+    }
+    HAL_Delay(MOTOR_INIT_ENABLE_SETTLE_MS);
+
+    result = motor_enable(motor, false, MOTOR_EXECUTE_NOW);
+    if (result != MOTOR_OK)
+    {
+        return result;
+    }
+    HAL_Delay(MOTOR_INIT_DISABLE_SETTLE_MS);
+
+    result = motor_enable(motor, true, MOTOR_EXECUTE_NOW);
+    if (result != MOTOR_OK)
+    {
+        return result;
+    }
+    HAL_Delay(MOTOR_INIT_ENABLE_SETTLE_MS);
+
+    return MOTOR_OK;
 }
 
 motor_result_t motor_set_speed(motor_t *motor,
@@ -919,6 +976,8 @@ motor_result_t motor_bus_process_can_frame(motor_bus_t *bus,
                 motor->encoder_valid = 1U;
             }
             motor->encoder_raw = encoder_value;
+            motor->encoder_update_ms = motor->last_update_ms;
+            motor->encoder_update_count++;
             break;
         }
 
@@ -942,6 +1001,7 @@ motor_result_t motor_bus_process_can_frame(motor_bus_t *bus,
             value_s32 = motor_read_u16_be(&data[2]);
             motor->actual_speed_rpm = (int16_t)((data[1] == 0U) ?
                                       value_s32 : -value_s32);
+            motor->speed_update_ms = motor->last_update_ms;
             break;
 
         case MOTOR_CMD_READ_POSITION:
@@ -950,6 +1010,7 @@ motor_result_t motor_bus_process_can_frame(motor_bus_t *bus,
             value_s64 = value_u32;
             motor->actual_position_pulse = (data[1] == 0U) ?
                                            value_s64 : -value_s64;
+            motor->position_update_ms = motor->last_update_ms;
             break;
 
         case MOTOR_CMD_READ_POSITION_ERROR:

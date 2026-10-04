@@ -49,8 +49,6 @@ add_executable(${CMAKE_PROJECT_NAME}
         BSP/screen.h
         BSP/IMU_UART.c
         BSP/IMU_UART.h
-        BSP/IMU_DATA_LOGGER.c
-        BSP/IMU_DATA_LOGGER.h
         Algorithm/IMU_GYRO_CALIBRATION.c
         Algorithm/IMU_GYRO_CALIBRATION.h
         Algorithm/MECANUM_INERTIAL_NAV.c

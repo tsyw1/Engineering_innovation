@@ -136,6 +136,10 @@ typedef struct
     volatile uint8_t last_function;
     volatile motor_reply_t last_reply;
     volatile uint32_t last_update_ms;
+    volatile uint32_t speed_update_ms;
+    volatile uint32_t encoder_update_ms;
+    volatile uint32_t encoder_update_count;
+    volatile uint32_t position_update_ms;
 } motor_t;
 
 struct motor_bus
@@ -173,7 +177,12 @@ motor_result_t motor_broadcast_read_id(motor_bus_t *bus);
 /** 读取最近一次广播读地址结果。 */
 bool motor_bus_get_discovered_id(const motor_bus_t *bus, uint8_t *id);
 
-/** 注册一台已知地址的电机。 */
+/**
+ * 注册一台已知地址的电机。
+ *
+ * 调用前必须先执行 motor_bus_start()；注册时会自动完成一次
+ * “使能-失能-再使能”的上电初始化流程。
+ */
 motor_result_t motor_init(motor_t *motor, motor_bus_t *bus, uint8_t id);
 
 motor_result_t motor_enable(motor_t *motor, bool enable, motor_sync_t sync);

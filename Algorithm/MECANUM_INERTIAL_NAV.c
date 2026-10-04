@@ -341,8 +341,8 @@ mecanum_inertial_nav_result_t mecanum_inertial_nav_update(
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
         const motor_t *motor = nav->config.motor[index];
-        if ((motor->encoder_valid == 0U) ||
-            (motor->last_function != 0x31U))
+        /* 编码器反馈是异步返回的，不能用 last_function 判断数据是否有效。 */
+        if (motor->encoder_valid == 0U)
         {
             return MECANUM_INERTIAL_NAV_NOT_READY;
         }
