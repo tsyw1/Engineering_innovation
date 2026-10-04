@@ -49,6 +49,12 @@ add_executable(${CMAKE_PROJECT_NAME}
         BSP/screen.h
         BSP/IMU_UART.c
         BSP/IMU_UART.h
+        BSP/IMU_DATA_LOGGER.c
+        BSP/IMU_DATA_LOGGER.h
+        Algorithm/IMU_GYRO_CALIBRATION.c
+        Algorithm/IMU_GYRO_CALIBRATION.h
+        Algorithm/MECANUM_INERTIAL_NAV.c
+        Algorithm/MECANUM_INERTIAL_NAV.h
 )
 
 # Add STM32CubeMX generated sources
@@ -67,6 +73,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/BSP
+    ${CMAKE_CURRENT_SOURCE_DIR}/Algorithm
 )
 
 # Add project symbols (macros)
