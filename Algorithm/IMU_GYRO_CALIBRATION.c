@@ -2,12 +2,11 @@
 
 #include <math.h>
 
-#define IMU_GYRO_Z_BIAS_WEIGHT           1.03f
+#define IMU_GYRO_Z_BIAS_WEIGHT           1.0f
 #define IMU_GYRO_CALIBRATION_TIMEOUT_MS  15000U
 #define IMU_GYRO_ACCEL_NORM_TOLERANCE    0.05f
-#define IMU_GYRO_STATIC_XY_LIMIT         1.5f
-#define IMU_GYRO_STATIC_Z_MIN_DPS        0.40f
-#define IMU_GYRO_STATIC_Z_MAX_DPS        0.58f
+#define IMU_GYRO_STATIC_XY_LIMIT         2.0f
+#define IMU_GYRO_STATIC_Z_LIMIT_DPS      2.0f
 
 jy901s_uart_result_t imu_gyro_calibration_run(
     imu_gyro_calibration_t *calibration,
@@ -77,8 +76,7 @@ jy901s_uart_result_t imu_gyro_calibration_run(
         if ((fabsf(accel_norm - 1.0f) > IMU_GYRO_ACCEL_NORM_TOLERANCE) ||
             (fabsf(data.angular_velocity_dps[0]) > IMU_GYRO_STATIC_XY_LIMIT) ||
             (fabsf(data.angular_velocity_dps[1]) > IMU_GYRO_STATIC_XY_LIMIT) ||
-            (gyro_z_dps < IMU_GYRO_STATIC_Z_MIN_DPS) ||
-            (gyro_z_dps > IMU_GYRO_STATIC_Z_MAX_DPS))
+            (fabsf(gyro_z_dps) > IMU_GYRO_STATIC_Z_LIMIT_DPS))
         {
             /* 丢弃当前异常样本，保留之前已经采集的有效样本。 */
             continue;

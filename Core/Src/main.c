@@ -13,12 +13,17 @@
 #include "gpio.h"
 #include "motor_can.h"
 #include "chassis_mecanum.h"
+#include "IMU_UART.h"
+#include "IMU_GYRO_CALIBRATION.h"
+#include "MECANUM_INERTIAL_NAV.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define TEST_TX_TIMEOUT_MS              100U
 #define TEST_LINE_BUFFER_SIZE           192U
+/* 置 1 可恢复统一底盘标定测试；默认 0 进入编码器/IMU 融合。 */
+#define APP_RUN_CALIBRATION_TEST        0U
 
 #if 0
 /* 小车前后左右移动演示参数，现已停用。 */
@@ -90,6 +95,11 @@ static motor_bus_t s_motor_bus;
 static motor_t s_motors[MECANUM_WHEEL_COUNT];
 static mecanum_chassis_t s_chassis;
 static uint8_t s_chassis_ready;
+static jy901s_uart_t s_imu_sensor;
+static imu_gyro_calibration_t s_imu_calibration;
+static mecanum_inertial_nav_t s_inertial_nav;
+static uint8_t s_fusion_ready;
+static uint32_t s_last_fusion_log_tick;
 
 static void test_write_text(const char *text)
 {
@@ -102,6 +112,30 @@ static void test_write_text(const char *text)
                           (uint8_t *)text,
                           (uint16_t)strlen(text),
                           TEST_TX_TIMEOUT_MS);
+}
+
+static void fusion_write_status(void)
+{
+  char line[TEST_LINE_BUFFER_SIZE];
+  int length;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "fusion,x_m,%.4f,y_m,%.4f,yaw_deg,%.2f,"
+                    "encoder_wz,%.4f,gyro_wz,%.4f,fused_wz,%.4f,"
+                    "gyro_bias_dps,%.4f,imu_frame,%lu\r\n",
+                    (double)s_inertial_nav.x_m,
+                    (double)s_inertial_nav.y_m,
+                    (double)(s_inertial_nav.yaw_rad * 57.295779513f),
+                    (double)s_inertial_nav.encoder_wz_rad_s,
+                    (double)s_inertial_nav.gyro_wz_rad_s,
+                    (double)s_inertial_nav.fused_wz_rad_s,
+                    (double)s_inertial_nav.gyro_z_bias_dps,
+                    (unsigned long)s_inertial_nav.last_imu_frame_count);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
 }
 
 static const char *calibration_test_motion_name(
@@ -1071,13 +1105,16 @@ int main(void)
 {
   motor_result_t motor_result;
   mecanum_result_t chassis_result;
+  jy901s_uart_result_t imu_result;
+  mecanum_inertial_nav_result_t nav_result;
 
   HAL_Init();
   SystemClock_Config();
 
   MX_GPIO_Init();
   MX_USART6_UART_Init();
-  test_write_text("calibration,boot,USART6_ready\r\n");
+  MX_USART1_UART_Init();
+  test_write_text("fusion,boot,USART6_ready\r\n");
   MX_CAN1_Init();
 
   motor_result = motor_bus_init(&s_motor_bus,
@@ -1106,14 +1143,79 @@ int main(void)
 
   if (s_chassis_ready != 0U)
   {
-    (void)calibration_test_run();
+    if (APP_RUN_CALIBRATION_TEST != 0U)
+    {
+      (void)calibration_test_run();
+    }
+    else
+    {
+      imu_result = jy901s_uart_init(&s_imu_sensor, &huart1);
+      if (imu_result != JY901S_UART_OK)
+      {
+        test_write_text("fusion,error,imu_init_failed\r\n");
+      }
+      else
+      {
+        /* JY901 RSW：加速度(bit1)+角速度(bit2)，100 Hz 输出。 */
+        imu_result = jy901s_uart_configure_output(
+            &s_imu_sensor,
+            JY901S_UART_OUTPUT_GYRO_ACCEL,
+            JY901S_UART_RATE_100HZ);
+        if (imu_result != JY901S_UART_OK)
+        {
+          test_write_text("fusion,error,imu_config_failed\r\n");
+        }
+        else
+        {
+          test_write_text("fusion,imu_ready,keep_robot_static\r\n");
+          imu_result = imu_gyro_calibration_run_default(
+              &s_imu_calibration,
+              &s_imu_sensor);
+          if ((imu_result != JY901S_UART_OK) ||
+              (s_imu_calibration.calibrated == 0U))
+          {
+            test_write_text("fusion,error,imu_calibration_failed\r\n");
+          }
+          else
+          {
+            nav_result = mecanum_inertial_nav_init_default(
+                &s_inertial_nav,
+                &s_chassis.config,
+                imu_gyro_calibration_get_bias(&s_imu_calibration));
+            if (nav_result != MECANUM_INERTIAL_NAV_OK)
+            {
+              test_write_text("fusion,error,nav_init_failed\r\n");
+            }
+            else
+            {
+              s_fusion_ready = 1U;
+              s_last_fusion_log_tick = HAL_GetTick();
+              test_write_text("fusion,ready\r\n");
+            }
+          }
+        }
+      }
+    }
   }
 
   while (1)
   {
-    /* 测试完成后继续更新 CAN 反馈，保持位置数据可读。 */
-    calibration_test_service();
-    HAL_Delay(CALIBRATION_TEST_LOOP_DELAY_MS);
+    if (s_chassis_ready != 0U)
+    {
+      (void)mecanum_chassis_feedback_task(&s_chassis);
+    }
+    if (s_fusion_ready != 0U)
+    {
+      (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                        &s_chassis,
+                                        &s_imu_sensor);
+      if ((uint32_t)(HAL_GetTick() - s_last_fusion_log_tick) >= 500U)
+      {
+        s_last_fusion_log_tick = HAL_GetTick();
+        fusion_write_status();
+      }
+    }
+    HAL_Delay(5U);
   }
 }
 

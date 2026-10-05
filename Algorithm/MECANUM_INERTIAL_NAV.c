@@ -77,14 +77,21 @@ static void mecanum_inertial_copy_encoder_baseline(
     mecanum_inertial_nav_t *nav,
     const mecanum_chassis_t *chassis)
 {
+    uint32_t primask;
     uint8_t index;
 
+    primask = __get_PRIMASK();
+    __disable_irq();
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        nav->last_encoder_raw[index] =
-            chassis->config.motor[index]->encoder_raw;
-        nav->last_motor_update_ms[index] =
-            chassis->config.motor[index]->last_update_ms;
+        nav->last_position_pulse[index] =
+            chassis->config.motor[index]->actual_position_pulse;
+        nav->last_position_update_count[index] =
+            chassis->config.motor[index]->position_update_count;
+    }
+    if (primask == 0U)
+    {
+        __enable_irq();
     }
 }
 
@@ -325,10 +332,14 @@ mecanum_inertial_nav_result_t mecanum_inertial_nav_update(
     float dt_s;
     float gyro_raw_rad_s;
     float bias_measurement_rad_s;
+    int64_t current_position_pulse[MECANUM_WHEEL_COUNT];
+    uint32_t current_position_update_count[MECANUM_WHEEL_COUNT];
     uint32_t now;
     uint32_t dt_ms;
     uint8_t index;
     uint8_t encoder_updated;
+    uint8_t all_encoder_updated;
+    uint32_t primask;
 
     if ((nav == NULL) || (nav->initialized == 0U) ||
         (chassis == NULL) || (imu_sensor == NULL) ||
@@ -344,22 +355,49 @@ mecanum_inertial_nav_result_t mecanum_inertial_nav_update(
     {
         return MECANUM_INERTIAL_NAV_NOT_READY;
     }
+    /* 主循环可能远快于 IMU 100 Hz 输出，不能重复消费同一帧。 */
+    if (imu_data.angular_velocity_frame_count ==
+        nav->last_imu_frame_count)
+    {
+        return MECANUM_INERTIAL_NAV_NOT_READY;
+    }
+
+    /* 位置是 64 位值，必须在 CAN 中断更新前一次性快照。 */
+    primask = __get_PRIMASK();
+    __disable_irq();
+    for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+    {
+        current_position_pulse[index] =
+            nav->config.motor[index]->actual_position_pulse;
+        current_position_update_count[index] =
+            nav->config.motor[index]->position_update_count;
+    }
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
 
     encoder_updated = 0U;
+    all_encoder_updated = 1U;
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
         const motor_t *motor = nav->config.motor[index];
-        /* 编码器反馈是异步返回的，不能用 last_function 判断数据是否有效。 */
-        if (motor->encoder_valid == 0U)
+        /* 四路位置必须都是同一批次的新 0x36 反馈，避免混合旧数据。 */
+        if (motor->position_valid == 0U)
         {
             return MECANUM_INERTIAL_NAV_NOT_READY;
         }
-        if (motor->last_update_ms != nav->last_motor_update_ms[index])
+        if (current_position_update_count[index] !=
+            nav->last_position_update_count[index])
         {
             encoder_updated = 1U;
         }
+        else
+        {
+            all_encoder_updated = 0U;
+        }
     }
-    if (encoder_updated == 0U)
+    if ((encoder_updated == 0U) || (all_encoder_updated == 0U))
     {
         return MECANUM_INERTIAL_NAV_NOT_READY;
     }
@@ -381,21 +419,23 @@ mecanum_inertial_nav_result_t mecanum_inertial_nav_update(
         (dt_s > MECANUM_INERTIAL_MAX_DT_S))
     {
         mecanum_inertial_copy_encoder_baseline(nav, chassis);
+        /* 这次输入已经被检查过，避免在下一次循环重复消费同一帧 IMU。 */
+        nav->last_imu_frame_count = imu_data.angular_velocity_frame_count;
         return MECANUM_INERTIAL_NAV_NOT_READY;
     }
 
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        const motor_t *motor = nav->config.motor[index];
-        int16_t encoder_delta = (int16_t)(
-            (uint16_t)(motor->encoder_raw - nav->last_encoder_raw[index]));
+        int64_t position_delta = current_position_pulse[index] -
+                                 nav->last_position_pulse[index];
         wheel_distance[index] =
-            (float)encoder_delta *
+            (float)position_delta *
             (2.0f * MECANUM_INERTIAL_PI_F * nav->config.wheel_radius_m) /
             (float)nav->config.pulses_per_rev;
         wheel_distance[index] *= (float)nav->config.direction_sign[index];
-        nav->last_encoder_raw[index] = motor->encoder_raw;
-        nav->last_motor_update_ms[index] = motor->last_update_ms;
+        nav->last_position_pulse[index] = current_position_pulse[index];
+        nav->last_position_update_count[index] =
+            current_position_update_count[index];
     }
 
     geometry_factor = nav->config.half_length_m + nav->config.half_width_m;
