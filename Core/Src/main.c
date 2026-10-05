@@ -19,11 +19,28 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #define TEST_TX_TIMEOUT_MS              100U
 #define TEST_LINE_BUFFER_SIZE           192U
 /* 置 1 可恢复统一底盘标定测试；默认 0 进入编码器/IMU 融合。 */
 #define APP_RUN_CALIBRATION_TEST        0U
+/* 默认上电自动执行四个连续 90 度旋转测试，完成后电机再次失能。 */
+#define APP_RUN_MOTION_TEST             1U
+#define MOTION_TEST_SPEED_MPS           0.20f
+#define MOTION_TEST_DISTANCE_M          2.10f
+#define MOTION_TEST_DECEL_SPEED_MPS     0.08f
+#define MOTION_TEST_DECEL_DISTANCE_M    0.15f
+#define MOTION_TEST_TIMEOUT_MS          20000U
+#define MOTION_TEST_SETTLE_MS           1000U
+#define MOTION_TEST_HEADING_HOLD        1U
+#define MOTION_TEST_HEADING_KP          1.80f
+#define MOTION_TEST_MAX_CORRECTION_WZ   0.15f
+#define MOTION_TEST_CONTROL_PERIOD_MS   20U
+#define MOTION_TEST_ROTATION_SPEED_RAD_S 0.20f
+#define MOTION_TEST_ROTATION_DECEL_SPEED_RAD_S 0.08f
+#define MOTION_TEST_ROTATION_DECEL_DEG  12.0f
+#define MOTION_TEST_ROTATION_TIMEOUT_MS 12000U
 
 #if 0
 /* 小车前后左右移动演示参数，现已停用。 */
@@ -136,6 +153,385 @@ static void fusion_write_status(void)
   {
     test_write_text(line);
   }
+}
+
+static float fusion_wrap_angle(float angle_rad)
+{
+  return atan2f(sinf(angle_rad), cosf(angle_rad));
+}
+
+#if 0
+static uint8_t fusion_run_motion_segment(const char *name,
+                                         float vx_mps,
+                                         float vy_mps,
+                                         float distance_m,
+                                         float heading_reference_rad)
+{
+  char line[TEST_LINE_BUFFER_SIZE];
+  int length;
+  float heading_error_rad;
+  float correction_wz_rad_s;
+  float command_speed_mps;
+  float body_direction_x;
+  float body_direction_y;
+  float world_direction_x;
+  float world_direction_y;
+  float displacement_x_m;
+  float displacement_y_m;
+  float progress_m;
+  float start_x_m;
+  float start_y_m;
+  float start_yaw_rad;
+  uint32_t start_tick;
+  uint32_t next_log_tick;
+  uint32_t next_control_tick;
+  uint8_t deceleration_sent;
+  mecanum_result_t result;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "fusion,segment_start,name,%s,vx_mps,%.3f,vy_mps,%.3f,"
+                    "speed_mps,%.3f,target_distance_m,%.3f,timeout_ms,%lu,"
+                    "heading_kp,%.2f\r\n",
+                    (name != NULL) ? name : "unknown",
+                    (double)vx_mps,
+                    (double)vy_mps,
+                    (double)MOTION_TEST_SPEED_MPS,
+                    (double)distance_m,
+                    (unsigned long)MOTION_TEST_TIMEOUT_MS,
+                    (double)MOTION_TEST_HEADING_KP);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+
+  /* 先保持静止建立 0x36 位置基准，避免把启动前位置算进测试位移。 */
+  start_tick = HAL_GetTick();
+  while ((uint32_t)(HAL_GetTick() - start_tick) < MOTION_TEST_SETTLE_MS)
+  {
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+    (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                      &s_chassis,
+                                      &s_imu_sensor);
+    HAL_Delay(5U);
+  }
+
+  start_x_m = s_inertial_nav.x_m;
+  start_y_m = s_inertial_nav.y_m;
+  start_yaw_rad = s_inertial_nav.yaw_rad;
+  body_direction_x = vx_mps / MOTION_TEST_SPEED_MPS;
+  body_direction_y = vy_mps / MOTION_TEST_SPEED_MPS;
+  world_direction_x = cosf(heading_reference_rad) * body_direction_x -
+                      sinf(heading_reference_rad) * body_direction_y;
+  world_direction_y = sinf(heading_reference_rad) * body_direction_x +
+                      cosf(heading_reference_rad) * body_direction_y;
+  command_speed_mps = MOTION_TEST_SPEED_MPS;
+  progress_m = 0.0f;
+  deceleration_sent = 0U;
+
+  result = mecanum_chassis_set_velocity(&s_chassis,
+                                        vx_mps,
+                                        vy_mps,
+                                        0.0f);
+  if ((result != MECANUM_OK) && (result != MECANUM_CLAMPED))
+  {
+    (void)mecanum_chassis_stop(&s_chassis);
+    (void)mecanum_chassis_enable(&s_chassis, false);
+    test_write_text("fusion,error,motion_command_failed\r\n");
+    return 0U;
+  }
+
+  start_tick = HAL_GetTick();
+  next_log_tick = start_tick;
+  next_control_tick = start_tick;
+  while ((uint32_t)(HAL_GetTick() - start_tick) < MOTION_TEST_TIMEOUT_MS)
+  {
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+    (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                      &s_chassis,
+                                      &s_imu_sensor);
+    displacement_x_m = s_inertial_nav.x_m - start_x_m;
+    displacement_y_m = s_inertial_nav.y_m - start_y_m;
+    progress_m = displacement_x_m * world_direction_x +
+                 displacement_y_m * world_direction_y;
+    if ((deceleration_sent == 0U) &&
+        ((distance_m - progress_m) <= MOTION_TEST_DECEL_DISTANCE_M))
+    {
+      command_speed_mps = MOTION_TEST_DECEL_SPEED_MPS;
+      deceleration_sent = 1U;
+      test_write_text("fusion,segment_decelerate\r\n");
+    }
+    if (progress_m >= distance_m)
+    {
+      break;
+    }
+    if ((MOTION_TEST_HEADING_HOLD != 0U) &&
+        ((int32_t)(HAL_GetTick() - next_control_tick) >= 0))
+    {
+      /* 用 sin/cos 计算最短角度误差，避免跨越 +/-pi 时跳变。 */
+      heading_error_rad = atan2f(
+          sinf(heading_reference_rad - s_inertial_nav.yaw_rad),
+          cosf(heading_reference_rad - s_inertial_nav.yaw_rad));
+      correction_wz_rad_s = MOTION_TEST_HEADING_KP * heading_error_rad;
+      if (correction_wz_rad_s > MOTION_TEST_MAX_CORRECTION_WZ)
+      {
+        correction_wz_rad_s = MOTION_TEST_MAX_CORRECTION_WZ;
+      }
+      else if (correction_wz_rad_s < -MOTION_TEST_MAX_CORRECTION_WZ)
+      {
+        correction_wz_rad_s = -MOTION_TEST_MAX_CORRECTION_WZ;
+      }
+      result = mecanum_chassis_set_velocity(&s_chassis,
+                                            body_direction_x * command_speed_mps,
+                                            body_direction_y * command_speed_mps,
+                                            correction_wz_rad_s);
+      if ((result != MECANUM_OK) && (result != MECANUM_CLAMPED))
+      {
+        (void)mecanum_chassis_stop(&s_chassis);
+        (void)mecanum_chassis_enable(&s_chassis, false);
+        test_write_text("fusion,error,heading_control_failed\r\n");
+        return 0U;
+      }
+      next_control_tick += MOTION_TEST_CONTROL_PERIOD_MS;
+    }
+    if ((int32_t)(HAL_GetTick() - next_log_tick) >= 0)
+    {
+      fusion_write_status();
+      next_log_tick += 500U;
+    }
+    HAL_Delay(5U);
+  }
+
+  (void)mecanum_chassis_stop(&s_chassis);
+  if (progress_m < distance_m)
+  {
+    test_write_text("fusion,error,segment_timeout\r\n");
+    return 0U;
+  }
+
+  /* 停车后继续采集一段时间，等待最后几帧位置反馈进入融合。 */
+  start_tick = HAL_GetTick();
+  while ((uint32_t)(HAL_GetTick() - start_tick) < MOTION_TEST_SETTLE_MS)
+  {
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+    (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                      &s_chassis,
+                                      &s_imu_sensor);
+    HAL_Delay(5U);
+  }
+
+  displacement_x_m = s_inertial_nav.x_m - start_x_m;
+  displacement_y_m = s_inertial_nav.y_m - start_y_m;
+  world_direction_x = cosf(heading_reference_rad) *
+                      (vx_mps / MOTION_TEST_SPEED_MPS) -
+                      sinf(heading_reference_rad) *
+                      (vy_mps / MOTION_TEST_SPEED_MPS);
+  world_direction_y = sinf(heading_reference_rad) *
+                      (vx_mps / MOTION_TEST_SPEED_MPS) +
+                      cosf(heading_reference_rad) *
+                      (vy_mps / MOTION_TEST_SPEED_MPS);
+  progress_m = displacement_x_m * world_direction_x +
+               displacement_y_m * world_direction_y;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "fusion,segment_end,name,%s,progress_m,%.4f,"
+                    "dx_m,%.4f,dy_m,%.4f,"
+                    "dyaw_deg,%.2f,x_m,%.4f,y_m,%.4f,yaw_deg,%.2f\r\n",
+                    (name != NULL) ? name : "unknown",
+                    (double)progress_m,
+                    (double)(s_inertial_nav.x_m - start_x_m),
+                    (double)(s_inertial_nav.y_m - start_y_m),
+                    (double)((s_inertial_nav.yaw_rad - start_yaw_rad) *
+                             57.295779513f),
+                    (double)s_inertial_nav.x_m,
+                    (double)s_inertial_nav.y_m,
+                    (double)(s_inertial_nav.yaw_rad * 57.295779513f));
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+  return 1U;
+}
+#endif
+
+static uint8_t fusion_run_rotation_segment(const char *name,
+                                           float target_angle_rad)
+{
+  char line[TEST_LINE_BUFFER_SIZE];
+  int length;
+  float start_yaw_rad;
+  float previous_yaw_rad;
+  float angle_accum_rad = 0.0f;
+  float command_wz_rad_s = MOTION_TEST_ROTATION_SPEED_RAD_S;
+  uint32_t start_tick;
+  uint32_t next_log_tick;
+  uint32_t next_control_tick;
+  uint8_t deceleration_sent = 0U;
+  mecanum_result_t result;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "fusion,rotation_start,name,%s,target_deg,%.1f,"
+                    "speed_rad_s,%.3f\r\n",
+                    (name != NULL) ? name : "unknown",
+                    (double)(target_angle_rad * 57.295779513f),
+                    (double)MOTION_TEST_ROTATION_SPEED_RAD_S);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+
+  start_tick = HAL_GetTick();
+  while ((uint32_t)(HAL_GetTick() - start_tick) < MOTION_TEST_SETTLE_MS)
+  {
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+    (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                      &s_chassis,
+                                      &s_imu_sensor);
+    HAL_Delay(5U);
+  }
+
+  start_yaw_rad = s_inertial_nav.yaw_rad;
+  previous_yaw_rad = start_yaw_rad;
+  result = mecanum_chassis_set_velocity(&s_chassis,
+                                        0.0f,
+                                        0.0f,
+                                        command_wz_rad_s);
+  if ((result != MECANUM_OK) && (result != MECANUM_CLAMPED))
+  {
+    test_write_text("fusion,error,rotation_command_failed\r\n");
+    return 0U;
+  }
+
+  start_tick = HAL_GetTick();
+  next_log_tick = start_tick;
+  next_control_tick = start_tick;
+  while ((uint32_t)(HAL_GetTick() - start_tick) <
+         MOTION_TEST_ROTATION_TIMEOUT_MS)
+  {
+    float angle_step_rad;
+    float remaining_rad;
+
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+    (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                      &s_chassis,
+                                      &s_imu_sensor);
+    angle_step_rad = fusion_wrap_angle(s_inertial_nav.yaw_rad -
+                                       previous_yaw_rad);
+    angle_accum_rad += angle_step_rad;
+    previous_yaw_rad = s_inertial_nav.yaw_rad;
+    remaining_rad = target_angle_rad - angle_accum_rad;
+
+    if ((deceleration_sent == 0U) &&
+        (remaining_rad <= MOTION_TEST_ROTATION_DECEL_DEG *
+                          0.01745329252f))
+    {
+      command_wz_rad_s = MOTION_TEST_ROTATION_DECEL_SPEED_RAD_S;
+      deceleration_sent = 1U;
+      test_write_text("fusion,rotation_decelerate\r\n");
+    }
+    if (angle_accum_rad >= target_angle_rad)
+    {
+      break;
+    }
+    if ((int32_t)(HAL_GetTick() - next_control_tick) >= 0)
+    {
+      result = mecanum_chassis_set_velocity(&s_chassis,
+                                            0.0f,
+                                            0.0f,
+                                            command_wz_rad_s);
+      if ((result != MECANUM_OK) && (result != MECANUM_CLAMPED))
+      {
+        (void)mecanum_chassis_stop(&s_chassis);
+        test_write_text("fusion,error,rotation_control_failed\r\n");
+        return 0U;
+      }
+      next_control_tick += MOTION_TEST_CONTROL_PERIOD_MS;
+    }
+    if ((int32_t)(HAL_GetTick() - next_log_tick) >= 0)
+    {
+      fusion_write_status();
+      next_log_tick += 500U;
+    }
+    HAL_Delay(5U);
+  }
+
+  (void)mecanum_chassis_stop(&s_chassis);
+  if (angle_accum_rad < target_angle_rad)
+  {
+    test_write_text("fusion,error,rotation_timeout\r\n");
+    return 0U;
+  }
+
+  start_tick = HAL_GetTick();
+  while ((uint32_t)(HAL_GetTick() - start_tick) < MOTION_TEST_SETTLE_MS)
+  {
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+    (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                      &s_chassis,
+                                      &s_imu_sensor);
+    HAL_Delay(5U);
+  }
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "fusion,rotation_end,name,%s,angle_deg,%.2f,"
+                    "start_yaw_deg,%.2f,end_yaw_deg,%.2f\r\n",
+                    (name != NULL) ? name : "unknown",
+                    (double)(angle_accum_rad * 57.295779513f),
+                    (double)(start_yaw_rad * 57.295779513f),
+                    (double)(s_inertial_nav.yaw_rad * 57.295779513f));
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+  return 1U;
+}
+
+static uint8_t fusion_run_motion_test(void)
+{
+  uint32_t start_tick;
+  mecanum_result_t result;
+
+  test_write_text("fusion,test_start,sequence,rotate_90_ccw_x4\r\n");
+
+  /* 先保持静止建立 0x36 位置基准，避免把启动前位置算进测试位移。 */
+  start_tick = HAL_GetTick();
+  while ((uint32_t)(HAL_GetTick() - start_tick) < MOTION_TEST_SETTLE_MS)
+  {
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+    (void)mecanum_inertial_nav_update(&s_inertial_nav,
+                                      &s_chassis,
+                                      &s_imu_sensor);
+    HAL_Delay(5U);
+  }
+
+  result = mecanum_chassis_enable(&s_chassis, true);
+  if (result != MECANUM_OK)
+  {
+    test_write_text("fusion,error,motor_enable_failed\r\n");
+    return 0U;
+  }
+
+  if ((fusion_run_rotation_segment("rotate_90_ccw_1",
+                                   90.0f * 0.01745329252f) == 0U) ||
+      (fusion_run_rotation_segment("rotate_90_ccw_2",
+                                   90.0f * 0.01745329252f) == 0U) ||
+      (fusion_run_rotation_segment("rotate_90_ccw_3",
+                                   90.0f * 0.01745329252f) == 0U) ||
+      (fusion_run_rotation_segment("rotate_90_ccw_4",
+                                   90.0f * 0.01745329252f) == 0U))
+  {
+    (void)mecanum_chassis_enable(&s_chassis, false);
+    return 0U;
+  }
+
+  (void)mecanum_chassis_stop(&s_chassis);
+  (void)mecanum_chassis_enable(&s_chassis, false);
+  test_write_text("fusion,test_end,final_state\r\n");
+  fusion_write_status();
+  return 1U;
 }
 
 static const char *calibration_test_motion_name(
@@ -1141,6 +1537,22 @@ int main(void)
     }
   }
 
+  if ((s_chassis_ready != 0U) &&
+      (APP_RUN_CALIBRATION_TEST == 0U))
+  {
+    /* IMU 校准阶段先失能电机，校准成功后自动测试会重新使能。 */
+    chassis_result = mecanum_chassis_enable(&s_chassis, false);
+    if (chassis_result != MECANUM_OK)
+    {
+      test_write_text("fusion,error,motor_disable_failed\r\n");
+      s_chassis_ready = 0U;
+    }
+    else
+    {
+      test_write_text("fusion,motors_disabled,imu_calibration\r\n");
+    }
+  }
+
   if (s_chassis_ready != 0U)
   {
     if (APP_RUN_CALIBRATION_TEST != 0U)
@@ -1191,6 +1603,10 @@ int main(void)
               s_fusion_ready = 1U;
               s_last_fusion_log_tick = HAL_GetTick();
               test_write_text("fusion,ready\r\n");
+              if (APP_RUN_MOTION_TEST != 0U)
+              {
+                (void)fusion_run_motion_test();
+              }
             }
           }
         }
