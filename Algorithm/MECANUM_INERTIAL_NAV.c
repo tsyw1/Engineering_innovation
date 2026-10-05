@@ -28,6 +28,11 @@ static float mecanum_nav_clamp(float value, float minimum, float maximum)
     return value;
 }
 
+static float mecanum_nav_odometry_scale(float value)
+{
+    return (value > 0.0f) ? value : 1.0f;
+}
+
 static float mecanum_nav_wrap_angle(float angle)
 {
     while (angle > MECANUM_INERTIAL_PI_F)
@@ -48,6 +53,9 @@ static uint8_t mecanum_inertial_config_valid(
 
     if ((config == NULL) || (config->wheel_radius_m <= 0.0f) ||
         ((config->half_length_m + config->half_width_m) <= 0.0f) ||
+        (config->odometry_x_scale < 0.0f) ||
+        (config->odometry_y_scale < 0.0f) ||
+        (config->odometry_yaw_scale < 0.0f) ||
         (config->pulses_per_rev == 0U))
     {
         return 0U;
@@ -404,6 +412,11 @@ mecanum_inertial_nav_result_t mecanum_inertial_nav_update(
                     wheel_distance[MECANUM_WHEEL_RL] +
                     wheel_distance[MECANUM_WHEEL_RR]) /
                    (4.0f * geometry_factor);
+
+    body_dx *= mecanum_nav_odometry_scale(nav->config.odometry_x_scale);
+    body_dy *= mecanum_nav_odometry_scale(nav->config.odometry_y_scale);
+    encoder_dyaw *= mecanum_nav_odometry_scale(
+        nav->config.odometry_yaw_scale);
 
     nav->vx_mps = body_dx / dt_s;
     nav->vy_mps = body_dy / dt_s;

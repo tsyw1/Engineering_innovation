@@ -32,20 +32,28 @@
 #define CAR_CAN_TIMEOUT_MS              100U
 #endif
 
-/* 麦轮底盘里程和旋转测试参数。 */
-#define CHASSIS_TEST_DISTANCE_M         2.4f
-#define CHASSIS_TEST_LINEAR_SPEED_MPS   0.20f
-#define CHASSIS_TEST_DECEL_DISTANCE_M   0.30f
-#define CHASSIS_TEST_DECEL_LINEAR_SPEED_MPS 0.05f
-#define CHASSIS_TEST_ROTATION_SPEED_RAD_S 0.35f
-#define CHASSIS_TEST_DECEL_ANGLE_DEG    15.0f
-#define CHASSIS_TEST_DECEL_ROTATION_SPEED_RAD_S 0.10f
-#define CHASSIS_TEST_LOOP_DELAY_MS      5U
-#define CHASSIS_TEST_ENCODER_PRINT_PERIOD_MS 200U
-#define CHASSIS_TEST_TIMEOUT_MS         30000U
-#define CHASSIS_TEST_SETTLE_TIME_MS     500U
-#define CHASSIS_TEST_CAN_TIMEOUT_MS     100U
-#define CHASSIS_TEST_PI_F               3.14159265358979323846f
+/* 编码器标定测试参数。每次上电只执行一个方向，便于外部测量实际位移。 */
+#define CALIBRATION_TEST_LINEAR_SPEED_MPS       0.12f
+#define CALIBRATION_TEST_ROTATION_SPEED_RAD_S   0.20f
+#define CALIBRATION_TEST_ROTATION_ANGLE_DEG     90.0f
+#define CALIBRATION_TEST_LINEAR_RUN_TIME_MS     20000U
+#define CALIBRATION_TEST_STARTUP_SETTLE_MS      1000U
+#define CALIBRATION_TEST_STOP_SETTLE_MS         1000U
+#define CALIBRATION_TEST_LOOP_DELAY_MS          5U
+#define CALIBRATION_TEST_READY_TIMEOUT_MS       5000U
+#define CALIBRATION_TEST_CAN_TIMEOUT_MS         100U
+#define CALIBRATION_TEST_PI_F                   3.14159265358979323846f
+
+/* 六个方向按固定顺序各测试一次。 */
+typedef enum
+{
+  CALIBRATION_MOTION_FORWARD = 0,
+  CALIBRATION_MOTION_BACKWARD,
+  CALIBRATION_MOTION_LEFT,
+  CALIBRATION_MOTION_RIGHT,
+  CALIBRATION_MOTION_ROTATE_CCW,
+  CALIBRATION_MOTION_ROTATE_CW
+} calibration_motion_t;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -62,18 +70,20 @@ static uint8_t car_run_direction(const char *motion_name,
 static uint8_t car_run_motion_demo(void);
 #endif
 
-static void chassis_test_service(void);
-static void chassis_test_write_odometry(const char *name);
-static void chassis_test_write_realtime_odometry(const char *name);
-static uint8_t chassis_test_wait_encoder_ready(void);
-static uint8_t chassis_test_encoder_valid_mask(void);
-static void chassis_test_write_encoder_diagnostics(const char *reason);
-static uint8_t chassis_test_run_translation(const char *name,
-                                            float vx_mps,
-                                            float vy_mps);
-static uint8_t chassis_test_run_rotation(const char *name,
-                                         float target_angle_deg);
-static uint8_t chassis_test_run_all(void);
+static void calibration_test_service(void);
+static uint8_t calibration_test_read_positions(
+    int64_t position[MECANUM_WHEEL_COUNT],
+    uint32_t update_count[MECANUM_WHEEL_COUNT],
+    const uint32_t baseline_count[MECANUM_WHEEL_COUNT],
+    uint8_t require_new,
+    uint32_t timeout_ms);
+static void calibration_test_write_snapshot(
+    const char *label,
+    const int64_t position[MECANUM_WHEEL_COUNT],
+    const uint32_t update_count[MECANUM_WHEEL_COUNT]);
+static void calibration_test_write_diagnostics(const char *reason);
+static uint8_t calibration_test_run_once(calibration_motion_t motion);
+static uint8_t calibration_test_run(void);
 
 /* Private user code ---------------------------------------------------------*/
 static motor_bus_t s_motor_bus;
@@ -93,6 +103,398 @@ static void test_write_text(const char *text)
                           (uint16_t)strlen(text),
                           TEST_TX_TIMEOUT_MS);
 }
+
+static const char *calibration_test_motion_name(
+    calibration_motion_t motion)
+{
+  switch (motion)
+  {
+    case CALIBRATION_MOTION_FORWARD:
+      return "forward";
+    case CALIBRATION_MOTION_BACKWARD:
+      return "backward";
+    case CALIBRATION_MOTION_LEFT:
+      return "left";
+    case CALIBRATION_MOTION_RIGHT:
+      return "right";
+    case CALIBRATION_MOTION_ROTATE_CCW:
+      return "rotate_ccw";
+    case CALIBRATION_MOTION_ROTATE_CW:
+      return "rotate_cw";
+    default:
+      return "unknown";
+  }
+}
+
+static uint8_t calibration_test_read_position_state(
+    int64_t position[MECANUM_WHEEL_COUNT],
+    uint32_t update_count[MECANUM_WHEEL_COUNT])
+{
+  uint32_t primask;
+  uint8_t index;
+  uint8_t ready = 1U;
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+  {
+    if (s_motors[index].position_valid == 0U)
+    {
+      ready = 0U;
+    }
+    position[index] = s_motors[index].actual_position_pulse;
+    update_count[index] = s_motors[index].position_update_count;
+  }
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+
+  return ready;
+}
+
+/* 只使用四路位置反馈都更新后的快照，避免新旧数据混合。 */
+static uint8_t calibration_test_read_positions(
+    int64_t position[MECANUM_WHEEL_COUNT],
+    uint32_t update_count[MECANUM_WHEEL_COUNT],
+    const uint32_t baseline_count[MECANUM_WHEEL_COUNT],
+    uint8_t require_new,
+    uint32_t timeout_ms)
+{
+  uint32_t start_tick = HAL_GetTick();
+  uint8_t index;
+
+  while ((uint32_t)(HAL_GetTick() - start_tick) < timeout_ms)
+  {
+    uint8_t all_updated = 1U;
+
+    calibration_test_service();
+    if (calibration_test_read_position_state(position, update_count) == 0U)
+    {
+      HAL_Delay(CALIBRATION_TEST_LOOP_DELAY_MS);
+      continue;
+    }
+
+    if (require_new != 0U)
+    {
+      for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+      {
+        if (update_count[index] == baseline_count[index])
+        {
+          all_updated = 0U;
+          break;
+        }
+      }
+      if (all_updated == 0U)
+      {
+        HAL_Delay(CALIBRATION_TEST_LOOP_DELAY_MS);
+        continue;
+      }
+    }
+    return 1U;
+  }
+
+  return 0U;
+}
+
+static void calibration_test_service(void)
+{
+  if (s_chassis_ready != 0U)
+  {
+    (void)mecanum_chassis_feedback_task(&s_chassis);
+  }
+}
+
+static void calibration_test_write_snapshot(
+    const char *label,
+    const int64_t position[MECANUM_WHEEL_COUNT],
+    const uint32_t update_count[MECANUM_WHEEL_COUNT])
+{
+  char line[TEST_LINE_BUFFER_SIZE];
+  int length;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "calibration,%s,tick,%lu,fl,%ld,fr,%ld,rl,%ld,rr,%ld,count,%lu,%lu,%lu,%lu\r\n",
+                    (label != NULL) ? label : "unknown",
+                    (unsigned long)HAL_GetTick(),
+                    (long)(int32_t)position[MECANUM_WHEEL_FL],
+                    (long)(int32_t)position[MECANUM_WHEEL_FR],
+                    (long)(int32_t)position[MECANUM_WHEEL_RL],
+                    (long)(int32_t)position[MECANUM_WHEEL_RR],
+                    (unsigned long)update_count[MECANUM_WHEEL_FL],
+                    (unsigned long)update_count[MECANUM_WHEEL_FR],
+                    (unsigned long)update_count[MECANUM_WHEEL_RL],
+                    (unsigned long)update_count[MECANUM_WHEEL_RR]);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+}
+
+static void calibration_test_write_diagnostics(const char *reason)
+{
+  char line[TEST_LINE_BUFFER_SIZE];
+  int length;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "calibration,error,%s,valid,%u,%u,%u,%u,updates,%lu,%lu,%lu,%lu,rx_frames,%lu,rx_errors,%lu,can_error,0x%08lX\r\n",
+                    (reason != NULL) ? reason : "unknown",
+                    (unsigned int)s_motors[0].position_valid,
+                    (unsigned int)s_motors[1].position_valid,
+                    (unsigned int)s_motors[2].position_valid,
+                    (unsigned int)s_motors[3].position_valid,
+                    (unsigned long)s_motors[0].position_update_count,
+                    (unsigned long)s_motors[1].position_update_count,
+                    (unsigned long)s_motors[2].position_update_count,
+                    (unsigned long)s_motors[3].position_update_count,
+                    (unsigned long)s_motor_bus.rx_frame_count,
+                    (unsigned long)s_motor_bus.rx_error_count,
+                    (unsigned long)s_motor_bus.last_can_error);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+}
+
+static void calibration_test_write_result(
+    calibration_motion_t motion,
+    uint32_t elapsed_ms,
+    const int64_t delta[MECANUM_WHEEL_COUNT])
+{
+  float wheel_distance[MECANUM_WHEEL_COUNT];
+  float geometry_factor;
+  float dx;
+  float dy;
+  float dyaw;
+  char line[TEST_LINE_BUFFER_SIZE];
+  int length;
+  uint8_t index;
+
+  for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+  {
+    wheel_distance[index] = (float)delta[index] *
+                            (2.0f * CALIBRATION_TEST_PI_F *
+                             s_chassis.config.wheel_radius_m) /
+                            (float)s_chassis.config.pulses_per_rev;
+    wheel_distance[index] *=
+        (float)s_chassis.config.direction_sign[index];
+  }
+
+  geometry_factor = s_chassis.config.half_length_m +
+                    s_chassis.config.half_width_m;
+  dx = (wheel_distance[MECANUM_WHEEL_FL] +
+        wheel_distance[MECANUM_WHEEL_FR] +
+        wheel_distance[MECANUM_WHEEL_RL] +
+        wheel_distance[MECANUM_WHEEL_RR]) * 0.25f;
+  dy = (-wheel_distance[MECANUM_WHEEL_FL] +
+        wheel_distance[MECANUM_WHEEL_FR] +
+        wheel_distance[MECANUM_WHEEL_RL] -
+        wheel_distance[MECANUM_WHEEL_RR]) * 0.25f;
+  dyaw = (-wheel_distance[MECANUM_WHEEL_FL] +
+          wheel_distance[MECANUM_WHEEL_FR] -
+          wheel_distance[MECANUM_WHEEL_RL] +
+          wheel_distance[MECANUM_WHEEL_RR]) /
+         (4.0f * geometry_factor);
+
+  dx *= (s_chassis.config.odometry_x_scale > 0.0f) ?
+        s_chassis.config.odometry_x_scale : 1.0f;
+  dy *= (s_chassis.config.odometry_y_scale > 0.0f) ?
+        s_chassis.config.odometry_y_scale : 1.0f;
+  dyaw *= (s_chassis.config.odometry_yaw_scale > 0.0f) ?
+          s_chassis.config.odometry_yaw_scale : 1.0f;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "calibration,result,%s,elapsed_ms,%lu,dfl,%ld,dfr,%ld,drl,%ld,drr,%ld\r\n",
+                    calibration_test_motion_name(motion),
+                    (unsigned long)elapsed_ms,
+                    (long)(int32_t)delta[MECANUM_WHEEL_FL],
+                    (long)(int32_t)delta[MECANUM_WHEEL_FR],
+                    (long)(int32_t)delta[MECANUM_WHEEL_RL],
+                    (long)(int32_t)delta[MECANUM_WHEEL_RR]);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "calibration,estimate,%s,dx_m,%.6f,dy_m,%.6f,dyaw_deg,%.4f,config_radius_m,%.6f,geometry_m,%.6f\r\n",
+                    calibration_test_motion_name(motion),
+                    (double)dx,
+                    (double)dy,
+                    (double)(dyaw * 180.0f / CALIBRATION_TEST_PI_F),
+                    (double)s_chassis.config.wheel_radius_m,
+                    (double)geometry_factor);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+}
+
+static uint8_t calibration_test_run_once(calibration_motion_t motion)
+{
+  int64_t start_position[MECANUM_WHEEL_COUNT];
+  int64_t end_position[MECANUM_WHEEL_COUNT];
+  int64_t delta[MECANUM_WHEEL_COUNT];
+  uint32_t start_count[MECANUM_WHEEL_COUNT];
+  uint32_t end_count[MECANUM_WHEEL_COUNT];
+  uint32_t run_time_ms;
+  uint32_t start_tick;
+  float vx_mps = 0.0f;
+  float vy_mps = 0.0f;
+  float wz_rad_s = 0.0f;
+  float rotation_angle_rad;
+  uint8_t index;
+
+  switch (motion)
+  {
+    case CALIBRATION_MOTION_FORWARD:
+      vx_mps = CALIBRATION_TEST_LINEAR_SPEED_MPS;
+      run_time_ms = CALIBRATION_TEST_LINEAR_RUN_TIME_MS;
+      break;
+    case CALIBRATION_MOTION_BACKWARD:
+      vx_mps = -CALIBRATION_TEST_LINEAR_SPEED_MPS;
+      run_time_ms = CALIBRATION_TEST_LINEAR_RUN_TIME_MS;
+      break;
+    case CALIBRATION_MOTION_LEFT:
+      vy_mps = CALIBRATION_TEST_LINEAR_SPEED_MPS;
+      run_time_ms = CALIBRATION_TEST_LINEAR_RUN_TIME_MS;
+      break;
+    case CALIBRATION_MOTION_RIGHT:
+      vy_mps = -CALIBRATION_TEST_LINEAR_SPEED_MPS;
+      run_time_ms = CALIBRATION_TEST_LINEAR_RUN_TIME_MS;
+      break;
+    case CALIBRATION_MOTION_ROTATE_CCW:
+      wz_rad_s = CALIBRATION_TEST_ROTATION_SPEED_RAD_S;
+      rotation_angle_rad = CALIBRATION_TEST_ROTATION_ANGLE_DEG *
+                           CALIBRATION_TEST_PI_F / 180.0f;
+      run_time_ms = (uint32_t)((rotation_angle_rad / wz_rad_s) *
+                               1000.0f + 0.5f);
+      break;
+    case CALIBRATION_MOTION_ROTATE_CW:
+      wz_rad_s = -CALIBRATION_TEST_ROTATION_SPEED_RAD_S;
+      rotation_angle_rad = CALIBRATION_TEST_ROTATION_ANGLE_DEG *
+                           CALIBRATION_TEST_PI_F / 180.0f;
+      run_time_ms = (uint32_t)((rotation_angle_rad /
+                                (-wz_rad_s)) * 1000.0f + 0.5f);
+      break;
+    default:
+      return 0U;
+  }
+
+  (void)mecanum_chassis_stop(&s_chassis);
+  (void)mecanum_chassis_enable(&s_chassis, false);
+  HAL_Delay(CALIBRATION_TEST_STARTUP_SETTLE_MS);
+
+  if (calibration_test_read_positions(start_position,
+                                      start_count,
+                                      start_count,
+                                      0U,
+                                      CALIBRATION_TEST_READY_TIMEOUT_MS) == 0U)
+  {
+    calibration_test_write_diagnostics("start_position_timeout");
+    return 0U;
+  }
+  calibration_test_write_snapshot("start", start_position, start_count);
+
+  if (mecanum_chassis_enable(&s_chassis, true) != MECANUM_OK)
+  {
+    calibration_test_write_diagnostics("enable_failed");
+    return 0U;
+  }
+  if (mecanum_chassis_set_velocity(&s_chassis,
+                                   vx_mps,
+                                   vy_mps,
+                                   wz_rad_s) == MECANUM_MOTOR_ERROR)
+  {
+    (void)mecanum_chassis_stop(&s_chassis);
+    calibration_test_write_diagnostics("command_failed");
+    return 0U;
+  }
+
+  start_tick = HAL_GetTick();
+  while ((uint32_t)(HAL_GetTick() - start_tick) < run_time_ms)
+  {
+    calibration_test_service();
+    HAL_Delay(CALIBRATION_TEST_LOOP_DELAY_MS);
+  }
+
+  (void)mecanum_chassis_stop(&s_chassis);
+  HAL_Delay(CALIBRATION_TEST_STOP_SETTLE_MS);
+  if (calibration_test_read_positions(end_position,
+                                      end_count,
+                                      start_count,
+                                      1U,
+                                      CALIBRATION_TEST_READY_TIMEOUT_MS) == 0U)
+  {
+    (void)mecanum_chassis_enable(&s_chassis, false);
+    calibration_test_write_diagnostics("end_position_timeout");
+    return 0U;
+  }
+  (void)mecanum_chassis_enable(&s_chassis, false);
+
+  for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+  {
+    delta[index] = end_position[index] - start_position[index];
+  }
+
+  calibration_test_write_snapshot("end", end_position, end_count);
+  calibration_test_write_result(motion,
+                                (uint32_t)(HAL_GetTick() - start_tick),
+                                delta);
+  test_write_text("calibration,segment_complete\r\n");
+  return 1U;
+}
+
+static uint8_t calibration_test_run(void)
+{
+  static const calibration_motion_t motion_sequence[] =
+  {
+    CALIBRATION_MOTION_FORWARD,
+    CALIBRATION_MOTION_BACKWARD,
+    CALIBRATION_MOTION_LEFT,
+    CALIBRATION_MOTION_RIGHT,
+    CALIBRATION_MOTION_ROTATE_CCW,
+    CALIBRATION_MOTION_ROTATE_CW
+  };
+  char line[TEST_LINE_BUFFER_SIZE];
+  int length;
+  uint8_t index;
+
+  length = snprintf(line,
+                    sizeof(line),
+                    "calibration,begin,mode,all,linear_speed_mps,%.3f,rotation_speed_rad_s,%.3f,rotation_angle_deg,%.1f,linear_run_ms,%lu\r\n",
+                    (double)CALIBRATION_TEST_LINEAR_SPEED_MPS,
+                    (double)CALIBRATION_TEST_ROTATION_SPEED_RAD_S,
+                    (double)CALIBRATION_TEST_ROTATION_ANGLE_DEG,
+                    (unsigned long)CALIBRATION_TEST_LINEAR_RUN_TIME_MS);
+  if ((length > 0) && ((size_t)length < sizeof(line)))
+  {
+    test_write_text(line);
+  }
+
+  for (index = 0U;
+       index < (uint8_t)(sizeof(motion_sequence) /
+                         sizeof(motion_sequence[0]));
+       index++)
+  {
+    if (calibration_test_run_once(motion_sequence[index]) == 0U)
+    {
+      (void)mecanum_chassis_stop(&s_chassis);
+      (void)mecanum_chassis_enable(&s_chassis, false);
+      test_write_text("calibration,sequence_failed\r\n");
+      return 0U;
+    }
+  }
+
+  test_write_text("calibration,sequence_complete\r\n");
+  return 1U;
+}
+
+#if 0
 
 #if 0
 static void car_write_init_diagnostics(mecanum_result_t chassis_result)
@@ -146,10 +548,10 @@ static void chassis_test_write_odometry(const char *name)
                       "valid,0x%02X,updates,%lu,%lu,%lu,%lu\r\n",
                       (name != NULL) ? name : "unknown",
                       (unsigned int)chassis_test_encoder_valid_mask(),
-                      (unsigned long)s_motors[0].encoder_update_count,
-                      (unsigned long)s_motors[1].encoder_update_count,
-                      (unsigned long)s_motors[2].encoder_update_count,
-                      (unsigned long)s_motors[3].encoder_update_count);
+                      (unsigned long)s_motors[0].position_update_count,
+                      (unsigned long)s_motors[1].position_update_count,
+                      (unsigned long)s_motors[2].position_update_count,
+                      (unsigned long)s_motors[3].position_update_count);
     if ((length > 0) && ((size_t)length < sizeof(line)))
     {
       test_write_text(line);
@@ -191,10 +593,10 @@ static void chassis_test_write_realtime_odometry(const char *name)
                       "valid,0x%02X,updates,%lu,%lu,%lu,%lu\r\n",
                       (name != NULL) ? name : "unknown",
                       (unsigned int)chassis_test_encoder_valid_mask(),
-                      (unsigned long)s_motors[0].encoder_update_count,
-                      (unsigned long)s_motors[1].encoder_update_count,
-                      (unsigned long)s_motors[2].encoder_update_count,
-                      (unsigned long)s_motors[3].encoder_update_count);
+                      (unsigned long)s_motors[0].position_update_count,
+                      (unsigned long)s_motors[1].position_update_count,
+                      (unsigned long)s_motors[2].position_update_count,
+                      (unsigned long)s_motors[3].position_update_count);
     if ((length > 0) && ((size_t)length < sizeof(line)))
     {
       test_write_text(line);
@@ -220,7 +622,7 @@ static void chassis_test_write_realtime_odometry(const char *name)
   }
 }
 
-/* 返回四个电机当前是否都收到过有效的 0x31 编码器反馈。 */
+/* 返回四个电机当前是否都收到过有效的 0x36 位置反馈。 */
 static uint8_t chassis_test_encoder_valid_mask(void)
 {
   uint8_t index;
@@ -228,7 +630,7 @@ static uint8_t chassis_test_encoder_valid_mask(void)
 
   for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
   {
-    if (s_motors[index].encoder_valid != 0U)
+    if (s_motors[index].position_valid != 0U)
     {
       mask |= (uint8_t)(1U << index);
     }
@@ -249,10 +651,10 @@ static void chassis_test_write_encoder_diagnostics(const char *reason)
                     "can_error,0x%08lX\r\n",
                     (reason != NULL) ? reason : "unknown",
                     (unsigned int)chassis_test_encoder_valid_mask(),
-                    (unsigned long)s_motors[0].encoder_update_count,
-                    (unsigned long)s_motors[1].encoder_update_count,
-                    (unsigned long)s_motors[2].encoder_update_count,
-                    (unsigned long)s_motors[3].encoder_update_count,
+                    (unsigned long)s_motors[0].position_update_count,
+                    (unsigned long)s_motors[1].position_update_count,
+                    (unsigned long)s_motors[2].position_update_count,
+                    (unsigned long)s_motors[3].position_update_count,
                     (unsigned long)s_motor_bus.rx_frame_count,
                     (unsigned long)s_motor_bus.rx_error_count,
                     (unsigned long)s_motor_bus.last_can_error);
@@ -485,7 +887,7 @@ static uint8_t chassis_test_run_all(void)
   test_write_text("chassis_test,begin\r\n");
   if ((chassis_test_run_translation("forward_2p4m",
                                     CHASSIS_TEST_LINEAR_SPEED_MPS,
-                                    0.0f) == 0U) ||
+                                    CHASSIS_TEST_FORWARD_VY_CORRECTION_MPS) == 0U) ||
       (chassis_test_run_translation("backward_2p4m",
                                     -CHASSIS_TEST_LINEAR_SPEED_MPS,
                                     0.0f) == 0U) ||
@@ -659,6 +1061,8 @@ static uint8_t car_run_motion_demo(void)
 }
 #endif
 
+#endif
+
 /**
   * @brief  The application entry point.
   * @retval int
@@ -673,17 +1077,17 @@ int main(void)
 
   MX_GPIO_Init();
   MX_USART6_UART_Init();
-  test_write_text("chassis_test,boot,USART6_ready\r\n");
+  test_write_text("calibration,boot,USART6_ready\r\n");
   MX_CAN1_Init();
 
   motor_result = motor_bus_init(&s_motor_bus,
                                 &hcan1,
                                 motor_can_hal_send_frame,
-                                CHASSIS_TEST_CAN_TIMEOUT_MS);
+                                 CALIBRATION_TEST_CAN_TIMEOUT_MS);
   if ((motor_result != MOTOR_OK) ||
       (motor_bus_start(&s_motor_bus) != MOTOR_OK))
   {
-    test_write_text("chassis_test,error,can_start_failed\r\n");
+    test_write_text("calibration,error,can_start_failed\r\n");
   }
   else
   {
@@ -692,7 +1096,7 @@ int main(void)
                                                   s_motors);
     if (chassis_result != MECANUM_OK)
     {
-      test_write_text("chassis_test,error,chassis_init_failed\r\n");
+       test_write_text("calibration,error,chassis_init_failed\r\n");
     }
     else
     {
@@ -702,14 +1106,14 @@ int main(void)
 
   if (s_chassis_ready != 0U)
   {
-    (void)chassis_test_run_all();
+    (void)calibration_test_run();
   }
 
   while (1)
   {
-    /* 测试完成后继续更新 CAN 反馈和编码器里程计。 */
-    chassis_test_service();
-    HAL_Delay(CHASSIS_TEST_LOOP_DELAY_MS);
+    /* 测试完成后继续更新 CAN 反馈，保持位置数据可读。 */
+    calibration_test_service();
+    HAL_Delay(CALIBRATION_TEST_LOOP_DELAY_MS);
   }
 }
 

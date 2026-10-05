@@ -14,6 +14,11 @@ static float mecanum_abs_f(float value)
     return (value < 0.0f) ? -value : value;
 }
 
+static float mecanum_odometry_scale(float value)
+{
+    return (value > 0.0f) ? value : 1.0f;
+}
+
 static int16_t mecanum_round_rpm(float value)
 {
     if (value >= 0.0f)
@@ -30,6 +35,9 @@ static bool mecanum_config_valid(const mecanum_config_t *config)
 
     if ((config == NULL) || (config->wheel_radius_m <= 0.0f) ||
         (config->half_length_m < 0.0f) || (config->half_width_m < 0.0f) ||
+        (config->odometry_x_scale < 0.0f) ||
+        (config->odometry_y_scale < 0.0f) ||
+        (config->odometry_yaw_scale < 0.0f) ||
         (config->pulses_per_rev == 0U) || (config->max_wheel_rpm == 0U) ||
         (config->max_wheel_rpm > MOTOR_EMM_MAX_SPEED_RPM))
     {
@@ -161,6 +169,9 @@ mecanum_result_t mecanum_chassis_init_default(
     config.wheel_radius_m = MECANUM_DEFAULT_WHEEL_RADIUS_M;
     config.half_length_m = MECANUM_DEFAULT_HALF_LENGTH_M;
     config.half_width_m = MECANUM_DEFAULT_HALF_WIDTH_M;
+    config.odometry_x_scale = MECANUM_DEFAULT_ODOMETRY_X_SCALE;
+    config.odometry_y_scale = MECANUM_DEFAULT_ODOMETRY_Y_SCALE;
+    config.odometry_yaw_scale = MECANUM_DEFAULT_ODOMETRY_YAW_SCALE;
     config.pulses_per_rev = MECANUM_DEFAULT_ENCODER_COUNTS_PER_REV;
     config.max_wheel_rpm = MECANUM_DEFAULT_MAX_WHEEL_RPM;
     config.acceleration = MECANUM_DEFAULT_ACCELERATION;
@@ -339,9 +350,9 @@ mecanum_result_t mecanum_chassis_read_feedback(mecanum_chassis_t *chassis)
     {
         motor_t *motor = chassis->config.motor[index];
 
-        /* Emm 固件的 0x31 是单圈线性化编码器值，供里程计使用。 */
+        /* 对比测试：使用 Emm 0x36 多圈电机实际位置作为里程计输入。 */
         if ((motor_read_speed(motor) != MOTOR_OK) ||
-            (motor_read_encoder(motor) != MOTOR_OK))
+            (motor_read_position(motor) != MOTOR_OK))
         {
             return MECANUM_MOTOR_ERROR;
         }
@@ -374,7 +385,7 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
     mecanum_chassis_t *chassis)
 {
     float wheel_distance[MECANUM_WHEEL_COUNT];
-    uint16_t current_encoder_raw[MECANUM_WHEEL_COUNT];
+    int64_t current_position_pulse[MECANUM_WHEEL_COUNT];
     uint32_t current_update_ms[MECANUM_WHEEL_COUNT];
     uint32_t current_update_count[MECANUM_WHEEL_COUNT];
     float geometry_factor;
@@ -396,15 +407,15 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
     {
         motor_t *motor = chassis->config.motor[index];
 
-        /* Y42 Emm 的 0x31 是单圈绝对编码器值，必须自行处理 0/65535 回绕。 */
-        if (motor->encoder_valid == 0U)
+        /* 对比测试：0x36 返回多圈实际位置，不需要单圈回绕处理。 */
+        if (motor->position_valid == 0U)
         {
             return MECANUM_NOT_READY;
         }
 
-        current_encoder_raw[index] = motor->encoder_raw;
-        current_update_ms[index] = motor->encoder_update_ms;
-        current_update_count[index] = motor->encoder_update_count;
+        current_position_pulse[index] = motor->actual_position_pulse;
+        current_update_ms[index] = motor->position_update_ms;
+        current_update_count[index] = motor->position_update_count;
         chassis->actual_wheel_rpm[index] = (int16_t)(
             (int32_t)motor->actual_speed_rpm *
             chassis->config.direction_sign[index]);
@@ -429,7 +440,7 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
     {
         for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
         {
-            chassis->last_encoder_raw[index] = current_encoder_raw[index];
+            chassis->last_position_pulse[index] = current_position_pulse[index];
             chassis->last_encoder_update_ms[index] = current_update_ms[index];
             chassis->last_encoder_update_count[index] =
                 current_update_count[index];
@@ -447,12 +458,10 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
 
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        /* 转换为有符号 16 位差值，正确处理 65535 -> 0 和 0 -> 65535。 */
-        int16_t encoder_delta = (int16_t)(
-            (uint16_t)(current_encoder_raw[index] -
-                       chassis->last_encoder_raw[index]));
+        int64_t position_delta = current_position_pulse[index] -
+                                 chassis->last_position_pulse[index];
 
-        wheel_distance[index] = (float)encoder_delta *
+        wheel_distance[index] = (float)position_delta *
                                 (2.0f * MECANUM_PI_F *
                                  chassis->config.wheel_radius_m) /
                                 (float)chassis->config.pulses_per_rev;
@@ -480,6 +489,11 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
             wheel_distance[MECANUM_WHEEL_RL] +
             wheel_distance[MECANUM_WHEEL_RR]) /
            (4.0f * geometry_factor);
+
+    /* 标定比例只修正里程计输出，不参与速度控制。 */
+    dx *= mecanum_odometry_scale(chassis->config.odometry_x_scale);
+    dy *= mecanum_odometry_scale(chassis->config.odometry_y_scale);
+    dyaw *= mecanum_odometry_scale(chassis->config.odometry_yaw_scale);
 
     /* 使用编码器自身的航向角作为积分基准，避免外部 IMU 覆盖原始结果。 */
     {
@@ -509,7 +523,7 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
 
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        chassis->last_encoder_raw[index] = current_encoder_raw[index];
+        chassis->last_position_pulse[index] = current_position_pulse[index];
         chassis->last_encoder_update_ms[index] = current_update_ms[index];
         chassis->last_encoder_update_count[index] = current_update_count[index];
     }
@@ -544,6 +558,7 @@ void mecanum_chassis_reset_odometry(mecanum_chassis_t *chassis)
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
         chassis->last_encoder_raw[index] = 0U;
+        chassis->last_position_pulse[index] = 0;
         chassis->last_encoder_update_ms[index] = 0U;
         chassis->last_encoder_update_count[index] = 0U;
     }

@@ -1011,6 +1011,8 @@ motor_result_t motor_bus_process_can_frame(motor_bus_t *bus,
             motor->actual_position_pulse = (data[1] == 0U) ?
                                            value_s64 : -value_s64;
             motor->position_update_ms = motor->last_update_ms;
+            motor->position_valid = 1U;
+            motor->position_update_count++;
             break;
 
         case MOTOR_CMD_READ_POSITION_ERROR:

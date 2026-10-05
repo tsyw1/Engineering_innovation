@@ -22,11 +22,17 @@
 #define MECANUM_DEFAULT_ACCELERATION    20U
 #define MECANUM_DEFAULT_MAX_WHEEL_RPM   MOTOR_EMM_MAX_SPEED_RPM
 #define MECANUM_DEFAULT_WHEEL_DIAMETER_MM 75.0f
-#define MECANUM_DEFAULT_WHEEL_RADIUS_M  0.0375f
+/* 根据前进/后退多次实测结果标定的等效轮半径。 */
+#define MECANUM_DEFAULT_WHEEL_RADIUS_M  0.03912f
 #define MECANUM_DEFAULT_WHEELBASE_MM    225.0f
 #define MECANUM_DEFAULT_TRACK_MM        248.0f
 #define MECANUM_DEFAULT_HALF_LENGTH_M   0.1125f
 #define MECANUM_DEFAULT_HALF_WIDTH_M    0.1240f
+
+/* 仅作用于编码器里程计，不改变速度控制的运动学换算。 */
+#define MECANUM_DEFAULT_ODOMETRY_X_SCALE    1.00000f
+#define MECANUM_DEFAULT_ODOMETRY_Y_SCALE    0.97646f
+#define MECANUM_DEFAULT_ODOMETRY_YAW_SCALE  1.01534f
 
 #define MECANUM_DEFAULT_MOTOR_FL_ID     1U
 #define MECANUM_DEFAULT_MOTOR_FR_ID     2U
@@ -83,7 +89,12 @@ typedef struct
     float half_length_m;        // 车体前后半轴距
     float half_width_m;         // 车体左右半轮距
 
-    uint32_t pulses_per_rev;    // 0x31 编码器一圈对应的计数，0~65535 共 65536 个计数
+    /* 编码器里程计标定比例，0 表示使用 1.0（兼容旧配置）。 */
+    float odometry_x_scale;
+    float odometry_y_scale;
+    float odometry_yaw_scale;
+
+    uint32_t pulses_per_rev;    // 0x36 位置一圈对应的计数，65536 个计数
     uint16_t max_wheel_rpm;     // 单轮最大转速
     uint8_t acceleration;       // CAN 速度模式加速度参数
 
@@ -99,7 +110,7 @@ typedef struct
     int16_t target_wheel_rpm[MECANUM_WHEEL_COUNT];
     int16_t actual_wheel_rpm[MECANUM_WHEEL_COUNT];
 
-    /* 车体坐标系下累计位姿，由 0x31 单圈编码器反馈积分得到。 */
+    /* 车体坐标系下累计位姿，由 0x36 多圈位置反馈积分得到。 */
     float odom_x_m;
     float odom_y_m;
     float odom_yaw_rad;
@@ -108,6 +119,7 @@ typedef struct
     float last_delta_yaw_rad;
 
     uint16_t last_encoder_raw[MECANUM_WHEEL_COUNT];
+    int64_t last_position_pulse[MECANUM_WHEEL_COUNT];
     uint32_t last_encoder_update_ms[MECANUM_WHEEL_COUNT];
     uint32_t last_encoder_update_count[MECANUM_WHEEL_COUNT];
     uint8_t odom_initialized;
@@ -151,10 +163,10 @@ mecanum_result_t mecanum_chassis_read_feedback(mecanum_chassis_t *chassis);
 /** 按默认周期请求一次四轮反馈。 */
 mecanum_result_t mecanum_chassis_feedback_task(mecanum_chassis_t *chassis);
 
-/** 根据最新 0x31 单圈编码器反馈更新轮式里程计。 */
+/** 根据最新 0x36 多圈位置反馈更新轮式里程计。 */
 mecanum_result_t mecanum_chassis_update_odometry(mecanum_chassis_t *chassis);
 
-/** 使用电机 0x31 单圈编码器反馈更新编码器独立里程计。 */
+/** 使用电机 0x36 多圈位置反馈更新编码器独立里程计。 */
 mecanum_result_t mecanum_chassis_update_encoder_odometry(
     mecanum_chassis_t *chassis);
 

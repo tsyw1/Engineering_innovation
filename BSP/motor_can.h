@@ -125,6 +125,8 @@ typedef struct
     volatile int16_t encoder_delta;
     volatile uint8_t encoder_valid;
     volatile int64_t actual_position_pulse;
+    volatile uint8_t position_valid;
+    volatile uint32_t position_update_count;
     volatile int64_t position_error_pulse;
     volatile uint16_t bus_voltage_mv;
     volatile uint16_t bus_current_ma;
