@@ -1,6 +1,8 @@
 #include "QR.h"
 #include "IMU_UART.h"
+#include "material_tray_uart_control.h"
 #include "motor_TTL.h"
+#include "vision_uart.h"
 #include "usart.h"
 
 #include <string.h>
@@ -8,12 +10,14 @@
 static uint8_t s_rx_byte;
 static char s_rx_buffer[QR_TASK_TEXT_LENGTH + 1U];
 static uint8_t s_rx_length;
+static uint8_t s_rx_overflow;
 
 static volatile QR_TaskCode_t s_task;
 static volatile uint8_t s_task_ready;
 static volatile uint8_t s_error_ready;
 static volatile QR_Status_t s_error_status = QR_STATUS_NOT_READY;
 static volatile QR_Status_t s_last_status = QR_STATUS_NOT_READY;
+static volatile QR_Diagnostics_t s_diagnostics;
 
 static uint8_t qr_is_digit(char value)
 {
@@ -54,6 +58,7 @@ static void qr_finish_receive(void)
 
     if (status == QR_STATUS_OK)
     {
+        s_diagnostics.valid_task_count++;
         qr_copy_task(&s_task, &task);
         s_task_ready = 1U;
         s_error_ready = 0U;
@@ -61,7 +66,7 @@ static void qr_finish_receive(void)
     }
     else
     {
-        s_task_ready = 0U;
+        s_diagnostics.parse_error_count++;
         s_error_status = status;
         s_error_ready = 1U;
     }
@@ -75,7 +80,9 @@ HAL_StatusTypeDef QR_Init(void)
     QR_ClearTask();
     QR_ClearError();
     s_rx_length = 0U;
+    s_rx_overflow = 0U;
     s_last_status = QR_STATUS_NOT_READY;
+    memset((void *)&s_diagnostics, 0, sizeof(s_diagnostics));
 
     return QR_StartReceive();
 }
@@ -85,9 +92,10 @@ HAL_StatusTypeDef QR_StartReceive(void)
     HAL_StatusTypeDef status;
 
     s_rx_byte = 0U;
-    status = HAL_UART_Receive_IT(&huart3, &s_rx_byte, 1U);
+    status = HAL_UART_Receive_IT(&huart4, &s_rx_byte, 1U);
     if (status != HAL_OK)
     {
+        s_diagnostics.uart_error_count++;
         s_last_status = QR_STATUS_HAL_ERROR;
         s_error_status = QR_STATUS_HAL_ERROR;
         s_error_ready = 1U;
@@ -98,28 +106,46 @@ HAL_StatusTypeDef QR_StartReceive(void)
 
 void QR_ProcessByte(uint8_t data)
 {
-    /* 扫描模块常见的 CR/LF 结束符直接忽略；15 个有效字符到齐时立即解析。 */
+    s_diagnostics.rx_byte_count++;
+    s_diagnostics.last_byte = data;
+
+    /* MaixCAM 使用 CR/LF 结束一帧，收到结束符后再校验完整任务码。 */
     if ((data == '\r') || (data == '\n'))
     {
-        if (s_rx_length > 0U)
+        if (s_rx_overflow != 0U)
+        {
+            s_last_status = QR_STATUS_FORMAT_ERROR;
+            s_error_status = QR_STATUS_FORMAT_ERROR;
+            s_error_ready = 1U;
+            s_diagnostics.parse_error_count++;
+            s_rx_length = 0U;
+            s_rx_overflow = 0U;
+            s_rx_buffer[0] = '\0';
+        }
+        else if (s_rx_length > 0U)
         {
             qr_finish_receive();
         }
+        s_diagnostics.current_length = s_rx_length;
+        return;
+    }
+
+    if (s_rx_overflow != 0U)
+    {
         return;
     }
 
     if (s_rx_length >= QR_TASK_TEXT_LENGTH)
     {
-        s_rx_length = 0U;
+        /* 超长帧一直丢弃到行结束，避免误接收合法的 15 字符前缀。 */
+        s_rx_overflow = 1U;
+        return;
     }
 
     s_rx_buffer[s_rx_length] = (char)data;
     s_rx_length++;
+    s_diagnostics.current_length = s_rx_length;
 
-    if (s_rx_length == QR_TASK_TEXT_LENGTH)
-    {
-        qr_finish_receive();
-    }
 }
 
 QR_Status_t QR_ParseTaskCode(const char *code, QR_TaskCode_t *task)
@@ -221,6 +247,36 @@ QR_Status_t QR_GetTask(QR_TaskCode_t *task)
     return QR_STATUS_OK;
 }
 
+QR_Status_t QR_TakeTask(QR_TaskCode_t *task)
+{
+    uint32_t primask;
+
+    if (task == NULL)
+    {
+        return QR_STATUS_NULL_POINTER;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    if (s_task_ready == 0U)
+    {
+        if (primask == 0U)
+        {
+            __enable_irq();
+        }
+        return QR_STATUS_NOT_READY;
+    }
+
+    memcpy(task, (const void *)&s_task, sizeof(QR_TaskCode_t));
+    s_task_ready = 0U;
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+
+    return QR_STATUS_OK;
+}
+
 uint8_t QR_IsTaskReady(void)
 {
     return s_task_ready;
@@ -272,20 +328,58 @@ QR_Status_t QR_GetLastStatus(void)
     return s_last_status;
 }
 
-/* USART3 接收完成后由 HAL 调用；USART3 连接 MaixCAM-Pro UART1。 */
+vision_uart_t *QR_GetVisionUart(void)
+{
+    return vision_uart_get_default();
+}
+
+void QR_GetDiagnostics(QR_Diagnostics_t *diagnostics)
+{
+    uint32_t primask;
+
+    if (diagnostics == NULL)
+    {
+        return;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    memcpy(diagnostics,
+           (const void *)&s_diagnostics,
+           sizeof(QR_Diagnostics_t));
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+}
+
+/* UART4 只接收二维码，USART3 独立接收视觉 JSON。 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+    vision_uart_t *vision;
+
     jy901s_uart_on_rx_complete(huart);
     motor_ttl_on_rx_complete(huart);
+    material_tray_uart_control_on_rx_complete(huart);
 
-    if (huart == &huart3)
+    if (huart == &huart4)
     {
         QR_ProcessByte(s_rx_byte);
-        if (HAL_UART_Receive_IT(&huart3, &s_rx_byte, 1U) != HAL_OK)
+        if (HAL_UART_Receive_IT(&huart4, &s_rx_byte, 1U) != HAL_OK)
         {
+            s_diagnostics.uart_error_count++;
             s_last_status = QR_STATUS_HAL_ERROR;
             s_error_status = QR_STATUS_HAL_ERROR;
             s_error_ready = 1U;
+        }
+    }
+    else if (huart == &huart3)
+    {
+        vision = vision_uart_get_default();
+        vision_uart_process_byte(vision, vision->rx_byte);
+        if (vision_uart_start_receive(vision) != VISION_UART_RESULT_OK)
+        {
+            vision_uart_on_error(vision);
         }
     }
 }
@@ -294,10 +388,22 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     jy901s_uart_on_error(huart);
     motor_ttl_on_error(huart);
+    material_tray_uart_control_on_error(huart);
 
-    if (huart == &huart3)
+    if (huart == &huart4)
     {
+        s_diagnostics.uart_error_count++;
+        s_last_status = QR_STATUS_HAL_ERROR;
+        s_error_status = QR_STATUS_HAL_ERROR;
+        s_error_ready = 1U;
         s_rx_length = 0U;
+        s_rx_overflow = 0U;
+        s_diagnostics.current_length = 0U;
         (void)QR_StartReceive();
+    }
+    else if (huart == &huart3)
+    {
+        vision_uart_on_error(vision_uart_get_default());
+        (void)vision_uart_start_receive(vision_uart_get_default());
     }
 }

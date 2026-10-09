@@ -39,12 +39,52 @@ add_executable(${CMAKE_PROJECT_NAME}
         BSP/motor_TTL.h
         BSP/chassis_mecanum.c
         BSP/chassis_mecanum.h
+        BSP/arm_z_axis.c
+        BSP/arm_z_axis.h
+        BSP/arm_lift_axis.c
+        BSP/arm_lift_axis.h
+        BSP/arm_controller.c
+        BSP/arm_controller.h
         BSP/servo.c
         BSP/servo.h
+        BSP/gripper_servo.c
+        BSP/gripper_servo.h
+        BSP/material_tray_servo.c
+        BSP/material_tray_servo.h
+        BSP/material_tray_uart_control.c
+        BSP/material_tray_uart_control.h
         BSP/IMU_IIC.c
         BSP/IMU_IIC.h
         BSP/QR.c
         BSP/QR.h
+        BSP/task_plan.c
+        BSP/task_plan.h
+        BSP/vision_uart.c
+        BSP/vision_uart.h
+        BSP/vision_fine_adjust.c
+        BSP/vision_fine_adjust.h
+        APP/task1_start_qr.c
+        APP/task1_start_qr.h
+        APP/task2_platform_pick.c
+        APP/task2_platform_pick.h
+          APP/task3_coarse_ring.c
+          APP/task3_coarse_ring.h
+          APP/task4_ring_return.c
+          APP/task4_ring_return.h
+          APP/task5_temporary_ring.c
+          APP/task5_temporary_ring.h
+          APP/task6_platform_pick.c
+          APP/task6_platform_pick.h
+          APP/task7_coarse_ring.c
+          APP/task7_coarse_ring.h
+          APP/task8_ring_return.c
+          APP/task8_ring_return.h
+          APP/task9_temporary_stack.c
+          APP/task9_temporary_stack.h
+          APP/task10_return_home.c
+          APP/task10_return_home.h
+          APP/target_ring_place_test.c
+        APP/target_ring_place_test.h
         BSP/screen.c
         BSP/screen.h
         BSP/IMU_UART.c
@@ -71,6 +111,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/BSP
+    ${CMAKE_CURRENT_SOURCE_DIR}/APP
     ${CMAKE_CURRENT_SOURCE_DIR}/Algorithm
 )
 

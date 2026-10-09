@@ -18,7 +18,7 @@
 #define MOTOR_MAX_COUNT                 6U
 #define MOTOR_CAN_FRAME_DATA_SIZE       8U
 #define MOTOR_CAN_COMMAND_MAX_SIZE      64U
-#define MOTOR_EMM_MAX_SPEED_RPM         3000U
+#define MOTOR_EMM_MAX_SPEED_RPM         5000U
 #define MOTOR_FIXED_CHECKSUM            0x6BU
 #define MOTOR_BROADCAST_ADDRESS         0U
 

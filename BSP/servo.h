@@ -35,8 +35,13 @@ servo_result_t servo_init(servo_t *servo,
 /** 启动舵机 PWM 输出。 */
 servo_result_t servo_start(servo_t *servo);
 
-/** 设置舵机角度，超过 180 度时自动限制到 180 度。 */
+/** 设置舵机角度，按默认 0~180 度范围换算。 */
 servo_result_t servo_set_angle(servo_t *servo, uint16_t angle_deg);
+
+/** 按指定机械角度范围换算舵机角度，例如 0~270 度。 */
+servo_result_t servo_set_angle_with_range(servo_t *servo,
+                                          uint16_t angle_deg,
+                                          uint16_t max_angle_deg);
 
 /** 直接设置脉宽，超出标定范围时自动限幅。 */
 servo_result_t servo_set_pulse_us(servo_t *servo, uint16_t pulse_us);

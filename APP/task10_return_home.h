@@ -1,0 +1,85 @@
+#ifndef ENGINEERING_INNOVATION_TASK10_RETURN_HOME_H
+#define ENGINEERING_INNOVATION_TASK10_RETURN_HOME_H
+
+#include "QR.h"
+#include "chassis_mecanum.h"
+#include "screen.h"
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define TASK10_RETURN_HOME_CENTER_RING 2U
+#define TASK10_RETURN_HOME_SPACING_MM 150U
+#define TASK10_RETURN_HOME_LEFT_MM 1900U
+#define TASK10_RETURN_HOME_BACKWARD_MM 1050U
+
+typedef void (*task10_return_home_status_fn)(uint8_t status,
+                                             const char *event);
+
+typedef enum
+{
+    TASK10_RETURN_HOME_WAIT_TASK = 0,
+    TASK10_RETURN_HOME_MOVE_TO_CENTER,
+    TASK10_RETURN_HOME_WAIT_CENTER_MOVE,
+    TASK10_RETURN_HOME_LEFT,
+    TASK10_RETURN_HOME_WAIT_LEFT,
+    TASK10_RETURN_HOME_BACKWARD,
+    TASK10_RETURN_HOME_WAIT_BACKWARD,
+    TASK10_RETURN_HOME_DONE,
+    TASK10_RETURN_HOME_FAILED
+} task10_return_home_state_t;
+
+typedef enum
+{
+    TASK10_RETURN_HOME_OK = 0,
+    TASK10_RETURN_HOME_WAITING,
+    TASK10_RETURN_HOME_INVALID_PARAM,
+    TASK10_RETURN_HOME_CHASSIS_ERROR,
+    TASK10_RETURN_HOME_SCREEN_ERROR
+} task10_return_home_result_t;
+
+typedef enum
+{
+    TASK10_RETURN_HOME_STATUS_INIT = 0U,
+    TASK10_RETURN_HOME_STATUS_MOVE = 1U,
+    TASK10_RETURN_HOME_STATUS_DONE = 2U,
+    TASK10_RETURN_HOME_STATUS_ERROR = 255U
+} task10_return_home_status_t;
+
+typedef struct
+{
+    mecanum_chassis_t *chassis;
+    screen_t *screen;
+    task10_return_home_status_fn write_status;
+    QR_TaskCode_t qr_task;
+    uint32_t move_start_tick;
+    uint32_t move_duration_ms;
+    uint8_t current_ring;
+    uint8_t task_ready;
+    task10_return_home_state_t state;
+} task10_return_home_t;
+
+task10_return_home_result_t task10_return_home_init(
+    task10_return_home_t *task,
+    mecanum_chassis_t *chassis,
+    screen_t *screen,
+    task10_return_home_status_fn write_status);
+
+task10_return_home_result_t task10_return_home_submit_qr(
+    task10_return_home_t *task,
+    const QR_TaskCode_t *qr_task);
+
+task10_return_home_result_t task10_return_home_step(
+    task10_return_home_t *task);
+
+task10_return_home_state_t task10_return_home_get_state(
+    const task10_return_home_t *task);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ENGINEERING_INNOVATION_TASK10_RETURN_HOME_H */

@@ -2,6 +2,7 @@
 #define ENGINEERING_INNOVATION_QR_H
 
 #include "main.h"
+#include "vision_uart.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,7 +40,17 @@ typedef struct
     uint8_t valid;
 } QR_TaskCode_t;
 
-/* 在 MX_USART3_UART_Init() 之后调用，启动 MaixCAM 二维码串口接收。 */
+typedef struct
+{
+    uint32_t rx_byte_count;
+    uint32_t valid_task_count;
+    uint32_t parse_error_count;
+    uint32_t uart_error_count;
+    uint8_t current_length;
+    uint8_t last_byte;
+} QR_Diagnostics_t;
+
+/* 在 MX_UART4_Init() 之后调用，启动二维码串口接收。 */
 HAL_StatusTypeDef QR_Init(void);
 HAL_StatusTypeDef QR_StartReceive(void);
 
@@ -51,6 +62,8 @@ QR_Status_t QR_ParseTaskCode(const char *code, QR_TaskCode_t *task);
 
 /* 读取最近一次有效任务码；没有新任务时返回 QR_STATUS_NOT_READY。 */
 QR_Status_t QR_GetTask(QR_TaskCode_t *task);
+/* 原子读取并清除任务就绪标志，主循环优先使用该接口。 */
+QR_Status_t QR_TakeTask(QR_TaskCode_t *task);
 uint8_t QR_IsTaskReady(void);
 void QR_ClearTask(void);
 
@@ -60,6 +73,11 @@ QR_Status_t QR_GetError(void);
 void QR_ClearError(void);
 
 QR_Status_t QR_GetLastStatus(void);
+/* 获取 UART4 接收活动统计，用于串口通信排查。 */
+void QR_GetDiagnostics(QR_Diagnostics_t *diagnostics);
+
+/* 获取视觉串口对象；视觉实际使用 USART3。 */
+vision_uart_t *QR_GetVisionUart(void);
 
 #ifdef __cplusplus
 }

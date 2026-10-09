@@ -56,7 +56,7 @@ typedef struct mecanum_inertial_nav
     float target_yaw_tolerance_rad;
     uint8_t target_active;
 
-    /* 0x36 Emm 多圈位置基准，不能再使用 0x31 的 16 位单圈值。 */
+    /* 使用 0x36 多圈位置反馈作为平移里程计，避免单圈回绕丢失位移。 */
     int64_t last_position_pulse[MECANUM_WHEEL_COUNT];
     uint32_t last_position_update_count[MECANUM_WHEEL_COUNT];
     uint32_t last_update_ms;

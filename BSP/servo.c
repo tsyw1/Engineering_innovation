@@ -52,28 +52,38 @@ servo_result_t servo_start(servo_t *servo)
     return SERVO_OK;
 }
 
-servo_result_t servo_set_angle(servo_t *servo, uint16_t angle_deg)
+servo_result_t servo_set_angle_with_range(servo_t *servo,
+                                          uint16_t angle_deg,
+                                          uint16_t max_angle_deg)
 {
     uint32_t pulse_range_us;
     uint32_t pulse_us;
 
-    if ((servo == NULL) || (servo->htim == NULL))
+    if ((servo == NULL) || (servo->htim == NULL) ||
+        (max_angle_deg == 0U))
     {
         return SERVO_INVALID_PARAM;
     }
 
-    if (angle_deg > SERVO_MAX_ANGLE_DEG)
+    if (angle_deg > max_angle_deg)
     {
-        angle_deg = SERVO_MAX_ANGLE_DEG;
+        angle_deg = max_angle_deg;
     }
 
     pulse_range_us = servo->max_pulse_us - servo->min_pulse_us;
     pulse_us = servo->min_pulse_us +
-               (pulse_range_us * angle_deg) / SERVO_MAX_ANGLE_DEG;
+               (pulse_range_us * angle_deg) / max_angle_deg;
 
     __HAL_TIM_SET_COMPARE(servo->htim, servo->channel, pulse_us);
 
     return SERVO_OK;
+}
+
+servo_result_t servo_set_angle(servo_t *servo, uint16_t angle_deg)
+{
+    return servo_set_angle_with_range(servo,
+                                      angle_deg,
+                                      SERVO_MAX_ANGLE_DEG);
 }
 
 servo_result_t servo_set_pulse_us(servo_t *servo, uint16_t pulse_us)

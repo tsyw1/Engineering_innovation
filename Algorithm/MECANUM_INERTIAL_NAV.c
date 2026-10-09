@@ -362,7 +362,7 @@ mecanum_inertial_nav_result_t mecanum_inertial_nav_update(
         return MECANUM_INERTIAL_NAV_NOT_READY;
     }
 
-    /* 位置是 64 位值，必须在 CAN 中断更新前一次性快照。 */
+    /* 位置值和更新计数必须在 CAN 中断更新前一次性快照。 */
     primask = __get_PRIMASK();
     __disable_irq();
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
@@ -382,7 +382,7 @@ mecanum_inertial_nav_result_t mecanum_inertial_nav_update(
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
         const motor_t *motor = nav->config.motor[index];
-        /* 四路位置必须都是同一批次的新 0x36 反馈，避免混合旧数据。 */
+        /* 四路位置必须都是同一批次的新 0x36 反馈。 */
         if (motor->position_valid == 0U)
         {
             return MECANUM_INERTIAL_NAV_NOT_READY;

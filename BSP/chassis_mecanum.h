@@ -13,12 +13,17 @@
 #define ENGINEERING_INNOVATION_CHASSIS_MECANUM_H
 
 #include "motor_can.h"
+#include "IMU_UART.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 
+struct mecanum_inertial_nav;
+
 #define MECANUM_WHEEL_COUNT              4U
 #define MECANUM_DEFAULT_ENCODER_COUNTS_PER_REV  65536UL
+/* Emm 位置模式默认细分为 16：3200 个位置脉冲对应电机一圈。 */
+#define MECANUM_POSITION_PULSES_PER_REV        3200UL
 #define MECANUM_DEFAULT_ACCELERATION    20U
 #define MECANUM_DEFAULT_MAX_WHEEL_RPM   MOTOR_EMM_MAX_SPEED_RPM
 #define MECANUM_DEFAULT_WHEEL_DIAMETER_MM 75.0f
@@ -29,7 +34,7 @@
 #define MECANUM_DEFAULT_HALF_LENGTH_M   0.1125f
 #define MECANUM_DEFAULT_HALF_WIDTH_M    0.1240f
 
-/* 仅作用于编码器里程计，不改变速度控制的运动学换算。 */
+/* 仅作用于编码器/惯性导航的平移里程计，不改变速度控制的运动学换算。 */
 #define MECANUM_DEFAULT_ODOMETRY_X_SCALE    1.01200f
 #define MECANUM_DEFAULT_ODOMETRY_Y_SCALE    1.01200f
 #define MECANUM_DEFAULT_ODOMETRY_YAW_SCALE  1.0041f
@@ -109,6 +114,8 @@ typedef struct
 
     int16_t target_wheel_rpm[MECANUM_WHEEL_COUNT];
     int16_t actual_wheel_rpm[MECANUM_WHEEL_COUNT];
+    /* 最近一次相对位置细调命令，单位为电机脉冲。 */
+    int32_t last_position_increment_pulse[MECANUM_WHEEL_COUNT];
 
     /* 车体坐标系下累计位姿，由 0x36 多圈位置反馈积分得到。 */
     float odom_x_m;
@@ -127,6 +134,11 @@ typedef struct
 
     /* 独立保存编码器里程计，避免后续 IMU 融合覆盖原始结果。 */
     mecanum_encoder_odometry_t encoder_odometry;
+
+    /* 固定距离动作优先使用惯性导航闭环；为空时回退到位置模式。 */
+    struct mecanum_inertial_nav *inertial_nav;
+    jy901s_uart_t *imu_sensor;
+    uint8_t inertial_motion_enabled;
 } mecanum_chassis_t;
 
 /** 初始化并检查四台 CAN 电机对象和几何参数，不会自动使能或运动。 */
@@ -156,6 +168,19 @@ mecanum_result_t mecanum_chassis_set_velocity(mecanum_chassis_t *chassis,
 mecanum_result_t mecanum_chassis_set_wheel_speed(
     mecanum_chassis_t *chassis,
     const int16_t wheel_rpm[MECANUM_WHEEL_COUNT]);
+
+/** 以相对当前位置模式执行一次四轮位置细调。 */
+mecanum_result_t mecanum_chassis_set_position_increment(
+    mecanum_chassis_t *chassis,
+    const int32_t pulse[MECANUM_WHEEL_COUNT],
+    uint16_t speed_rpm,
+    uint8_t acceleration);
+
+/** 绑定惯性导航和 IMU，供状态读取和显式闭环控制使用。 */
+void mecanum_chassis_attach_inertial_nav(
+    mecanum_chassis_t *chassis,
+    struct mecanum_inertial_nav *nav,
+    jy901s_uart_t *imu_sensor);
 
 /** 请求四台电机的速度和位置反馈。CAN 响应由中断异步更新到 motor_t。 */
 mecanum_result_t mecanum_chassis_read_feedback(mecanum_chassis_t *chassis);
