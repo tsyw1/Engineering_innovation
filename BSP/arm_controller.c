@@ -675,8 +675,9 @@ arm_controller_result_t arm_controller_place_to_target_ring(
         MOTOR_POSITION_ABSOLUTE);
 }
 
-arm_controller_result_t arm_controller_place_ring_item_from_tray(
-    arm_controller_t *controller)
+static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal(
+    arm_controller_t *controller,
+    uint8_t lift_after_place)
 {
     arm_controller_result_t result;
     gripper_servo_result_t gripper_result;
@@ -756,10 +757,28 @@ arm_controller_result_t arm_controller_place_ring_item_from_tray(
     {
         return result;
     }
+    if (lift_after_place == 0U)
+    {
+        /* 松爪稳定后保持低位，供移车后直接识别下一靶环。 */
+        HAL_Delay(ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS);
+        return ARM_CONTROLLER_OK;
+    }
     return arm_controller_move_motor_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
+}
+
+arm_controller_result_t arm_controller_place_ring_item_from_tray(
+    arm_controller_t *controller)
+{
+    return arm_controller_place_ring_item_from_tray_internal(controller, 1U);
+}
+
+arm_controller_result_t arm_controller_place_ring_item_from_tray_keep_low(
+    arm_controller_t *controller)
+{
+    return arm_controller_place_ring_item_from_tray_internal(controller, 0U);
 }
 
 arm_controller_result_t arm_controller_place_stack_item_from_tray(
@@ -1128,7 +1147,6 @@ arm_controller_result_t arm_controller_prepare_stack_pick(
     arm_controller_t *controller)
 {
     arm_controller_result_t result;
-    gripper_servo_result_t gripper_result;
 
     if ((controller == NULL) || (controller->initialized == 0U) ||
         (controller->bus == NULL))
@@ -1145,6 +1163,20 @@ arm_controller_result_t arm_controller_prepare_stack_pick(
     {
         return result;
     }
+    return arm_controller_prepare_stack_pick_aligned(controller);
+}
+
+arm_controller_result_t arm_controller_prepare_stack_pick_aligned(
+    arm_controller_t *controller)
+{
+    gripper_servo_result_t gripper_result;
+
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (controller->bus == NULL))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+
     gripper_result = gripper_servo_open(&controller->gripper);
     if (gripper_result != GRIPPER_SERVO_OK)
     {
@@ -1156,8 +1188,9 @@ arm_controller_result_t arm_controller_prepare_stack_pick(
         MOTOR_POSITION_ABSOLUTE);
 }
 
-arm_controller_result_t arm_controller_stack_item_from_tray(
-    arm_controller_t *controller)
+static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
+    arm_controller_t *controller,
+    uint8_t lift_after_place)
 {
     arm_controller_result_t result;
     gripper_servo_result_t gripper_result;
@@ -1235,10 +1268,28 @@ arm_controller_result_t arm_controller_stack_item_from_tray(
     {
         return result;
     }
+    if (lift_after_place == 0U)
+    {
+        /* 已确认码垛高度可避开双层物料，松爪稳定后保持该姿态移车。 */
+        HAL_Delay(ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS);
+        return ARM_CONTROLLER_OK;
+    }
     return arm_controller_move_motor_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
+}
+
+arm_controller_result_t arm_controller_stack_item_from_tray(
+    arm_controller_t *controller)
+{
+    return arm_controller_stack_item_from_tray_internal(controller, 1U);
+}
+
+arm_controller_result_t arm_controller_stack_item_from_tray_keep_low(
+    arm_controller_t *controller)
+{
+    return arm_controller_stack_item_from_tray_internal(controller, 0U);
 }
 
 arm_controller_result_t arm_controller_return_to_tray_direction(

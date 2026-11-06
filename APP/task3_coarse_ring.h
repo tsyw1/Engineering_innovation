@@ -19,6 +19,7 @@ extern "C" {
 #define TASK3_COARSE_RING_RIGHT_MM     1720U
 #define TASK3_COARSE_RING_SPACING_MM    150U
 #define TASK3_COARSE_RING_CENTER        2U
+#define TASK3_COARSE_RING_TRAY_SETTLE_MS 400U
 
 typedef void (*task3_coarse_ring_status_fn)(uint8_t status,
                                             const char *event);

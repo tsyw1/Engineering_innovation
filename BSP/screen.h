@@ -2,6 +2,7 @@
 #define ENGINEERING_INNOVATION_SCREEN_H
 
 #include "main.h"
+#include "start_zone.h"
 
 #include <stdint.h>
 
@@ -9,6 +10,8 @@
 #define SCREEN_TASK_TEXT_CONTROL     "t0"
 #define SCREEN_PICK_COUNT_CONTROL    "t3"
 #define SCREEN_PLACE_COUNT_CONTROL   "t5"
+#define SCREEN_START_ZONE_1_COMMAND   0x31U
+#define SCREEN_START_ZONE_2_COMMAND   0x32U
 
 typedef enum
 {
@@ -23,10 +26,27 @@ typedef struct
     uint32_t timeout_ms;
     uint32_t successful_pick_count;
     uint32_t successful_place_count;
+    uint8_t rx_byte;
+    volatile start_zone_t pending_start_zone;
+    volatile uint8_t start_locked;
+    volatile uint8_t rx_restart_needed;
 } screen_t;
 
 /** 初始化串口屏对象，UART 外设需要先由 CubeMX 完成初始化。 */
 screen_result_t screen_init(screen_t *screen, UART_HandleTypeDef *huart);
+
+/** 启用单字节中断接收。仅支持一个活动串口屏，不等待结束符。 */
+screen_result_t screen_start_receive(screen_t *screen);
+
+/** 主循环调用，重试因 UART 错误或接收挂接失败而中断的接收。 */
+void screen_rx_task(screen_t *screen);
+
+/** 原子取走首次有效启动命令；本次上电期间后续启动命令均忽略。 */
+uint8_t screen_take_start_zone(screen_t *screen, start_zone_t *start_zone);
+
+/** 由工程唯一的 HAL UART 回调分发调用；中断内不执行运动或发送。 */
+void screen_on_rx_complete(UART_HandleTypeDef *huart);
+void screen_on_error(UART_HandleTypeDef *huart);
 
 /** 发送一条串口屏指令，并自动追加 0xFF 0xFF 0xFF。 */
 screen_result_t screen_send_command(screen_t *screen, const char *command);

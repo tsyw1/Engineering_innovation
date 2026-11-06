@@ -352,11 +352,32 @@ vision_uart_t *vision_uart_get_default(void)
     return &s_default_vision;
 }
 
+static void vision_uart_discard_input(vision_uart_t *vision)
+{
+    uint32_t primask;
+
+    if (vision == NULL)
+    {
+        return;
+    }
+    primask = __get_PRIMASK();
+    __disable_irq();
+    vision->frame_ready = 0U;
+    vision->pending_ready = 0U;
+    vision->pending_length = 0U;
+    vision->pending_overflow = 0U;
+    vision->rx_length = 0U;
+    vision->rx_overflow = 0U;
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+}
+
 vision_uart_result_t vision_uart_set_mode(vision_uart_t *vision,
                                           vision_uart_mode_t mode)
 {
     uint8_t command[2];
-    uint32_t primask;
 
     if ((vision == NULL) || (vision->initialized == 0U) ||
         (vision->huart == NULL))
@@ -370,16 +391,7 @@ vision_uart_result_t vision_uart_set_mode(vision_uart_t *vision,
     }
 
     /* 切换阶段时丢弃旧模式的半帧、待解析帧和已发布帧。 */
-    primask = __get_PRIMASK();
-    __disable_irq();
-    vision->frame_ready = 0U;
-    vision->pending_ready = 0U;
-    vision->rx_length = 0U;
-    vision->rx_overflow = 0U;
-    if (primask == 0U)
-    {
-        __enable_irq();
-    }
+    vision_uart_discard_input(vision);
 
     command[0] = (mode == VISION_UART_MODE_MATERIAL) ? '1' : '2';
     command[1] = '\n';
@@ -499,10 +511,7 @@ vision_uart_result_t vision_uart_take_frame(vision_uart_t *vision,
 
 void vision_uart_clear_frame(vision_uart_t *vision)
 {
-    if (vision != NULL)
-    {
-        vision->frame_ready = 0U;
-    }
+    vision_uart_discard_input(vision);
 }
 
 void vision_uart_get_diagnostics(const vision_uart_t *vision,

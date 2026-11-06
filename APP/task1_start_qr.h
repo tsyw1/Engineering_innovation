@@ -15,6 +15,7 @@ extern "C" {
 
 #define TASK1_START_QR_FORWARD_FIRST_MM 100U
 #define TASK1_START_QR_LEFT_MM         1050U
+#define TASK1_START_QR_RIGHT_MM        1150U
 #define TASK1_START_QR_FORWARD_QR_MM   150U
 
 typedef void (*task1_start_qr_status_fn)(uint8_t status,
@@ -24,12 +25,14 @@ typedef enum
 {
     TASK1_START_QR_WAIT_START = 0,
     TASK1_START_QR_FORWARD_FIRST,
-    TASK1_START_QR_LEFT_AND_ZERO,
+    TASK1_START_QR_LATERAL_AND_ZERO,
     TASK1_START_QR_FORWARD_QR,
     TASK1_START_QR_WAIT_QR,
     TASK1_START_QR_PROCESS_QR,
     TASK1_START_QR_DONE,
-    TASK1_START_QR_FAILED
+    TASK1_START_QR_FAILED,
+    /* 保留旧状态名，兼容现有调试代码。 */
+    TASK1_START_QR_LEFT_AND_ZERO = TASK1_START_QR_LATERAL_AND_ZERO
 } task1_start_qr_state_t;
 
 typedef enum
@@ -67,6 +70,7 @@ typedef struct
     uint32_t move_duration_ms;
     uint8_t start_requested;
     uint8_t task_ready;
+    start_zone_t start_zone;
     task1_start_qr_state_t state;
 } task1_start_qr_t;
 
@@ -78,6 +82,10 @@ task1_start_qr_result_t task1_start_qr_init(
     task1_start_qr_status_fn write_status);
 
 void task1_start_qr_request_start(task1_start_qr_t *task);
+
+/** 仅允许尚未启动时设置起点；初始化默认启停区1。 */
+task1_start_qr_result_t task1_start_qr_set_start_zone(
+    task1_start_qr_t *task, start_zone_t start_zone);
 
 task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task);
 

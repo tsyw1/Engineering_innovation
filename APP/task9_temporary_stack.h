@@ -22,8 +22,8 @@ extern "C" {
 #define TASK9_TEMPORARY_STACK_BACKWARD_RING_3_MM 660U
 #define TASK9_TEMPORARY_STACK_SPACING_MM 150U
 #define TASK9_TEMPORARY_STACK_CENTER 2U
-#define TASK9_TEMPORARY_STACK_TRAY_SETTLE_MS 500U
-#define TASK9_TEMPORARY_STACK_POST_ALIGN_RIGHT_MM 10U
+#define TASK9_TEMPORARY_STACK_TRAY_SETTLE_MS 400U
+#define TASK9_TEMPORARY_STACK_POST_ALIGN_RIGHT_MM 15U
 
 typedef void (*task9_temporary_stack_status_fn)(uint8_t status,
                                                  const char *event);

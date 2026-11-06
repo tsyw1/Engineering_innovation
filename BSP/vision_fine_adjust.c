@@ -139,7 +139,7 @@ void vision_fine_adjust_config_default(vision_fine_adjust_config_t *config)
     config->position_pulses_per_pixel = 0.48f;
     config->max_step_pulses = 96U;
     /* 位置由脉冲数控制，速度只保证小脉冲能够可靠执行。 */
-    config->position_speed_rpm = 300U;
+    config->position_speed_rpm = 60U;
     config->position_acceleration = 220U;
     config->position_settle_ms = 10U;
 }
@@ -171,10 +171,11 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
     return VISION_FINE_ADJUST_OK;
 }
 
-vision_fine_adjust_result_t vision_fine_adjust_start(
+static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
     vision_fine_adjust_t *adjust,
     vision_uart_mode_t mode,
-    uint8_t target_id)
+    uint8_t target_id,
+    uint8_t mode_preselected)
 {
     if ((adjust == NULL) || (adjust->vision == NULL) ||
         (adjust->chassis == NULL) || (target_id == 0U))
@@ -194,7 +195,18 @@ vision_fine_adjust_result_t vision_fine_adjust_start(
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
     vision_fine_stop(adjust);
-    if (vision_uart_set_mode(adjust->vision, mode) != VISION_UART_RESULT_OK)
+    if (mode_preselected != 0U)
+    {
+        if (adjust->vision->current_mode != mode)
+        {
+            adjust->state = VISION_FINE_ADJUST_ERROR;
+            return VISION_FINE_ADJUST_UART_ERROR;
+        }
+        /* 只保留停车后收到的新帧，不重复发送已经提前发送的模式命令。 */
+        vision_uart_clear_frame(adjust->vision);
+    }
+    else if (vision_uart_set_mode(adjust->vision, mode) !=
+             VISION_UART_RESULT_OK)
     {
         adjust->state = VISION_FINE_ADJUST_ERROR;
         return VISION_FINE_ADJUST_UART_ERROR;
@@ -206,6 +218,37 @@ vision_fine_adjust_result_t vision_fine_adjust_start(
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
     adjust->state = VISION_FINE_ADJUST_WAITING_FRAME;
     return VISION_FINE_ADJUST_OK;
+}
+
+vision_fine_adjust_result_t vision_fine_adjust_start(
+    vision_fine_adjust_t *adjust,
+    vision_uart_mode_t mode,
+    uint8_t target_id)
+{
+    return vision_fine_adjust_start_internal(adjust, mode, target_id, 0U);
+}
+
+vision_fine_adjust_result_t vision_fine_adjust_preselect_mode(
+    vision_fine_adjust_t *adjust,
+    vision_uart_mode_t mode)
+{
+    if ((adjust == NULL) || (adjust->vision == NULL) ||
+        ((mode != VISION_UART_MODE_MATERIAL) &&
+         (mode != VISION_UART_MODE_TARGET_RING)))
+    {
+        return VISION_FINE_ADJUST_INVALID_PARAM;
+    }
+    return (vision_uart_set_mode(adjust->vision, mode) ==
+            VISION_UART_RESULT_OK) ?
+           VISION_FINE_ADJUST_OK : VISION_FINE_ADJUST_UART_ERROR;
+}
+
+vision_fine_adjust_result_t vision_fine_adjust_start_preselected(
+    vision_fine_adjust_t *adjust,
+    vision_uart_mode_t mode,
+    uint8_t target_id)
+{
+    return vision_fine_adjust_start_internal(adjust, mode, target_id, 1U);
 }
 
 vision_fine_adjust_result_t vision_fine_adjust_step(
@@ -413,6 +456,26 @@ vision_fine_adjust_result_t vision_fine_adjust_prepare_place_and_start(
     return vision_fine_adjust_start(adjust,
                                     VISION_UART_MODE_TARGET_RING,
                                     target_ring);
+}
+
+vision_fine_adjust_result_t
+vision_fine_adjust_prepare_place_and_start_preselected(
+    vision_fine_adjust_t *adjust,
+    arm_controller_t *arm,
+    uint8_t target_ring)
+{
+    if (arm == NULL)
+    {
+        return VISION_FINE_ADJUST_INVALID_PARAM;
+    }
+    if (arm_controller_prepare_ground_place(arm) != ARM_CONTROLLER_OK)
+    {
+        return VISION_FINE_ADJUST_ARM_ERROR;
+    }
+    return vision_fine_adjust_start_preselected(
+        adjust,
+        VISION_UART_MODE_TARGET_RING,
+        target_ring);
 }
 
 void vision_fine_adjust_abort(vision_fine_adjust_t *adjust)

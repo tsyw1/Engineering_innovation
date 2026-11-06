@@ -11,8 +11,8 @@
 #define MECANUM_PI_F 3.14159265358979323846f
 /* Emm 位置命令拆成多帧 CAN 数据，多台电机连续发送时留出间隔。 */
 #define MECANUM_POSITION_COMMAND_GAP_MS 2U
-/* 位置模式同样限制在线速度，避免任务传入的默认 300 RPM 过快。 */
-#define MECANUM_POSITION_MAX_SPEED_MPS 0.25f
+/* 位置模式限制为约60 RPM，匹配任务层的路线速度。 */
+#define MECANUM_POSITION_MAX_SPEED_MPS 0.246f
 #define MECANUM_INERTIAL_MOVE_MAX_SPEED_MPS 0.25f
 #define MECANUM_INERTIAL_MOVE_MAX_WZ_RAD_S  0.35f
 #define MECANUM_INERTIAL_MOVE_KP_POSITION   1.20f

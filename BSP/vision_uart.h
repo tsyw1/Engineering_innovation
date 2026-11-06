@@ -133,6 +133,7 @@ void vision_uart_process_byte(vision_uart_t *vision, uint8_t byte);
 void vision_uart_task(vision_uart_t *vision);
 vision_uart_result_t vision_uart_take_frame(vision_uart_t *vision,
                                             vision_uart_frame_t *frame);
+/** 丢弃当前半帧、待解析帧及已发布帧，不发送模式命令。 */
 void vision_uart_clear_frame(vision_uart_t *vision);
 void vision_uart_get_diagnostics(const vision_uart_t *vision,
                                  vision_uart_diagnostics_t *diagnostics);

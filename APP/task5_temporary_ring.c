@@ -5,7 +5,7 @@
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
 #define TASK5_MOVE_SPEED_RPM          60U
 #define TASK5_MOVE_ACCELERATION       240U
-#define TASK5_MOVE_SETTLE_MS         600U
+#define TASK5_MOVE_SETTLE_MS         400U
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK5_ROTATE_CLOCKWISE_SIGN   (-1)
 
@@ -481,13 +481,17 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
             task5_status(task,
                          TASK5_TEMPORARY_RING_STATUS_PREPARE,
                          "task5_ground_place_prepare_start");
-            arm_result = arm_controller_prepare_ground_place_aligned(
-                task->arm);
-            if (arm_result != ARM_CONTROLLER_OK)
+            /* 仅第一件需要下降；后两件沿用前一件的低位放置姿态。 */
+            if (task->item_index == 0U)
             {
-                return task5_fail(task,
-                                  TASK5_TEMPORARY_RING_ARM_ERROR,
-                                  "task5_ground_place_prepare_failed");
+                arm_result = arm_controller_prepare_ground_place_aligned(
+                    task->arm);
+                if (arm_result != ARM_CONTROLLER_OK)
+                {
+                    return task5_fail(task,
+                                      TASK5_TEMPORARY_RING_ARM_ERROR,
+                                      "task5_ground_place_prepare_failed");
+                }
             }
             if (vision_fine_adjust_start(
                     task->fine_adjust,
@@ -544,8 +548,17 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
                          "task5_pick_from_tray_and_place_start");
             /* 任务五放到地面靶环，使用地面靶环放置高度 -7500 度；
              * 码垛高度 -4663.7 度只由任务九使用。 */
-            arm_result = arm_controller_place_ring_item_from_tray(
-                task->arm);
+            if (task->item_index + 1U < TASK5_TEMPORARY_RING_ITEM_COUNT)
+            {
+                arm_result = arm_controller_place_ring_item_from_tray_keep_low(
+                    task->arm);
+            }
+            else
+            {
+                /* 最后一件仍抬到最高点，衔接任务6跨区取料。 */
+                arm_result = arm_controller_place_ring_item_from_tray(
+                    task->arm);
+            }
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task5_fail(task,

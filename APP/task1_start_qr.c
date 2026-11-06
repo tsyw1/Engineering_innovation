@@ -3,9 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TASK1_MOVE_SPEED_RPM        300U
+#define TASK1_MOVE_SPEED_RPM         60U
 #define TASK1_MOVE_ACCELERATION      240U
-#define TASK1_MOVE_SETTLE_MS        600U
+#define TASK1_MOVE_SETTLE_MS        400U
 
 static void task1_status(task1_start_qr_t *task,
                          uint8_t status,
@@ -154,11 +154,26 @@ task1_start_qr_result_t task1_start_qr_init(
     task->chassis = chassis;
     task->screen = screen;
     task->write_status = write_status;
+    task->start_zone = START_ZONE_1;
     task->state = TASK1_START_QR_WAIT_START;
     task1_status(task, TASK1_START_QR_STATUS_INIT, "task1_ready");
     task1_status(task,
                  TASK1_START_QR_STATUS_WAIT_START,
                  "task1_waiting_start");
+    return TASK1_START_QR_OK;
+}
+
+task1_start_qr_result_t task1_start_qr_set_start_zone(
+    task1_start_qr_t *task, start_zone_t start_zone)
+{
+    if ((task == NULL) ||
+        ((start_zone != START_ZONE_1) && (start_zone != START_ZONE_2)) ||
+        (task->state != TASK1_START_QR_WAIT_START) ||
+        (task->start_requested != 0U))
+    {
+        return TASK1_START_QR_INVALID_PARAM;
+    }
+    task->start_zone = start_zone;
     return TASK1_START_QR_OK;
 }
 
@@ -204,19 +219,28 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             }
             task1_wait_move_done(task);
             task1_stop_and_settle(task);
-            task->state = TASK1_START_QR_LEFT_AND_ZERO;
+            task->state = TASK1_START_QR_LATERAL_AND_ZERO;
             task1_status(task, TASK1_START_QR_STATUS_MOVE,
-                         "task1_left_1050mm_start");
+                         (task->start_zone == START_ZONE_2) ?
+                         "task1_right_1150mm_start" : "task1_left_1050mm_start");
             return TASK1_START_QR_OK;
 
-        case TASK1_START_QR_LEFT_AND_ZERO:
-            result = task1_move(task, TASK1_START_QR_LEFT_MM, 0, 1);
+        case TASK1_START_QR_LATERAL_AND_ZERO:
+            /* 起点区2位于场地下侧，车头同样朝左，向车体右侧横移至二维码。 */
+            result = task1_move(task,
+                                (task->start_zone == START_ZONE_2) ?
+                                TASK1_START_QR_RIGHT_MM : TASK1_START_QR_LEFT_MM,
+                                0,
+                                (task->start_zone == START_ZONE_2) ? -1 : 1);
             if (result != TASK1_START_QR_OK)
             {
-                return task1_fail(task, result, "task1_left_1050mm_failed");
+                return task1_fail(task, result,
+                                  (task->start_zone == START_ZONE_2) ?
+                                  "task1_right_1150mm_failed" : "task1_left_1050mm_failed");
             }
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
-                         "task1_arm_zero_during_left_start");
+                         (task->start_zone == START_ZONE_2) ?
+                         "task1_arm_zero_during_right_start" : "task1_arm_zero_during_left_start");
             if (arm_controller_zero(task->arm) != ARM_CONTROLLER_OK)
             {
                 return task1_fail(task,
@@ -226,7 +250,8 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             task1_wait_move_done(task);
             task1_stop_and_settle(task);
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
-                         "task1_arm_zero_during_left_done");
+                         (task->start_zone == START_ZONE_2) ?
+                         "task1_arm_zero_during_right_done" : "task1_arm_zero_during_left_done");
             task->state = TASK1_START_QR_FORWARD_QR;
             return TASK1_START_QR_OK;
 

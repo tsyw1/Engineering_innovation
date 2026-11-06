@@ -5,7 +5,7 @@
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
 #define TASK7_MOVE_SPEED_RPM          60U
 #define TASK7_MOVE_ACCELERATION       240U
-#define TASK7_MOVE_SETTLE_MS         600U
+#define TASK7_MOVE_SETTLE_MS         400U
 #define TASK7_ROTATE_SIGN              1
 
 static void task7_status(task7_coarse_ring_t *task,
@@ -412,14 +412,27 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
             task7_status(task,
                          TASK7_COARSE_RING_STATUS_PREPARE,
                          "task7_ground_place_prepare_start");
-            if (vision_fine_adjust_prepare_place_and_start(
-                    task->fine_adjust,
-                    task->arm,
-                    task->target_ring) != VISION_FINE_ADJUST_OK)
+            if (task->item_index == 0U)
             {
+                if (vision_fine_adjust_prepare_place_and_start(
+                        task->fine_adjust,
+                        task->arm,
+                        task->target_ring) != VISION_FINE_ADJUST_OK)
+                {
+                    return task7_fail(task,
+                                      TASK7_COARSE_RING_ARM_ERROR,
+                                      "task7_ground_place_prepare_failed");
+                }
+            }
+            else if (vision_fine_adjust_start(
+                         task->fine_adjust,
+                         VISION_UART_MODE_TARGET_RING,
+                         task->target_ring) != VISION_FINE_ADJUST_OK)
+            {
+                /* 前一件已保持靶环放置姿态，无需重复旋转、下降。 */
                 return task7_fail(task,
-                                  TASK7_COARSE_RING_ARM_ERROR,
-                                  "task7_ground_place_prepare_failed");
+                                  TASK7_COARSE_RING_VISION_ERROR,
+                                  "task7_target_ring_mode_start_failed");
             }
             task->state = TASK7_COARSE_RING_ALIGN;
             return TASK7_COARSE_RING_OK;
@@ -465,7 +478,15 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
             task7_status(task,
                          TASK7_COARSE_RING_STATUS_PLACE,
                          "task7_pick_from_tray_and_place_start");
-            arm_result = arm_controller_place_ring_item_from_tray(task->arm);
+            if (task->item_index + 1U < TASK7_COARSE_RING_ITEM_COUNT)
+            {
+                arm_result = arm_controller_place_ring_item_from_tray_keep_low(
+                    task->arm);
+            }
+            else
+            {
+                arm_result = arm_controller_place_ring_item_from_tray(task->arm);
+            }
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task7_fail(task,
@@ -492,14 +513,7 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
                              "task7_three_items_placed");
                 return TASK7_COARSE_RING_OK;
             }
-            /* 非最后一件回到物料盘方向，为下一件取料做准备。 */
-            arm_result = arm_controller_finish_place(task->arm);
-            if (arm_result != ARM_CONTROLLER_OK)
-            {
-                return task7_fail(task,
-                                  TASK7_COARSE_RING_ARM_ERROR,
-                                  "task7_finish_place_failed");
-            }
+            /* 前两件保持低位、面向靶环、夹爪打开，移车后直接视觉对准。 */
             task->state = TASK7_COARSE_RING_PREPARE_ITEM;
             return TASK7_COARSE_RING_OK;
 

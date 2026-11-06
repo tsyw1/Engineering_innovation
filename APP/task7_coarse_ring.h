@@ -20,7 +20,7 @@ extern "C" {
 #define TASK7_COARSE_RING_SPACING_MM    150U
 #define TASK7_COARSE_RING_CENTER          2U
 #define TASK7_COARSE_RING_ITEM_COUNT      3U
-#define TASK7_COARSE_RING_TRAY_SETTLE_MS 500U
+#define TASK7_COARSE_RING_TRAY_SETTLE_MS 400U
 
 typedef void (*task7_coarse_ring_status_fn)(uint8_t status,
                                             const char *event);

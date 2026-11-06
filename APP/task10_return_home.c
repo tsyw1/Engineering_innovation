@@ -5,7 +5,7 @@
 /* 与底盘位置模式限速一致，保证等待时间按实际速度计算。 */
 #define TASK10_MOVE_SPEED_RPM          60U
 #define TASK10_MOVE_ACCELERATION       240U
-#define TASK10_MOVE_SETTLE_MS         600U
+#define TASK10_MOVE_SETTLE_MS         400U
 
 static void task10_status(task10_return_home_t *task,
                           uint8_t status,
@@ -191,10 +191,24 @@ task10_return_home_result_t task10_return_home_init(
     task->chassis = chassis;
     task->screen = screen;
     task->write_status = write_status;
+    task->start_zone = START_ZONE_1;
     task->state = TASK10_RETURN_HOME_WAIT_TASK;
     task10_status(task,
                   TASK10_RETURN_HOME_STATUS_INIT,
                   "task10_return_home_ready");
+    return TASK10_RETURN_HOME_OK;
+}
+
+task10_return_home_result_t task10_return_home_set_start_zone(
+    task10_return_home_t *task, start_zone_t start_zone)
+{
+    if ((task == NULL) ||
+        ((start_zone != START_ZONE_1) && (start_zone != START_ZONE_2)) ||
+        (task->state != TASK10_RETURN_HOME_WAIT_TASK))
+    {
+        return TASK10_RETURN_HOME_INVALID_PARAM;
+    }
+    task->start_zone = start_zone;
     return TASK10_RETURN_HOME_OK;
 }
 
@@ -299,26 +313,30 @@ task10_return_home_result_t task10_return_home_step(
         case TASK10_RETURN_HOME_WAIT_LEFT:
             task10_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
-            task->state = TASK10_RETURN_HOME_BACKWARD;
+            task->state = TASK10_RETURN_HOME_LONGITUDINAL;
             return TASK10_RETURN_HOME_OK;
 
-        case TASK10_RETURN_HOME_BACKWARD:
+        case TASK10_RETURN_HOME_LONGITUDINAL:
             task10_status(task,
                           TASK10_RETURN_HOME_STATUS_MOVE,
-                          "task10_backward_1050mm_start");
+                          (task->start_zone == START_ZONE_2) ?
+                          "task10_forward_980mm_start" : "task10_backward_1050mm_start");
+            /* 区1后退1050 mm；启停区2以前向移动980 mm。 */
             result = task10_move_linear(task,
-                                        TASK10_RETURN_HOME_BACKWARD_MM,
-                                        -1,
+                                        (task->start_zone == START_ZONE_2) ?
+                                        TASK10_RETURN_HOME_ZONE2_FORWARD_MM : TASK10_RETURN_HOME_BACKWARD_MM,
+                                        (task->start_zone == START_ZONE_2) ? 1 : -1,
                                         0);
             if (result != TASK10_RETURN_HOME_OK)
             {
                 return task10_fail(task, result,
-                                   "task10_backward_1050mm_failed");
+                                   (task->start_zone == START_ZONE_2) ?
+                                   "task10_forward_980mm_failed" : "task10_backward_1050mm_failed");
             }
-            task->state = TASK10_RETURN_HOME_WAIT_BACKWARD;
+            task->state = TASK10_RETURN_HOME_WAIT_LONGITUDINAL;
             return TASK10_RETURN_HOME_OK;
 
-        case TASK10_RETURN_HOME_WAIT_BACKWARD:
+        case TASK10_RETURN_HOME_WAIT_LONGITUDINAL:
             task10_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
             if (task10_refresh_statistics(task) != TASK10_RETURN_HOME_OK)

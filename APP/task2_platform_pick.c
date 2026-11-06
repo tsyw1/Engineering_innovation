@@ -3,10 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* 与底盘位置模式 0.25 m/s 限速一致，保证等待时间按实际速度计算。 */
+/* 与底盘位置模式约60 RPM限速一致，保证等待时间按实际速度计算。 */
 #define TASK2_MOVE_SPEED_RPM         60U
 #define TASK2_MOVE_ACCELERATION      240U
-#define TASK2_MOVE_SETTLE_MS        600U
+#define TASK2_MOVE_SETTLE_MS        400U
 
 static void task2_status(task2_platform_pick_t *task,
                          uint8_t status,

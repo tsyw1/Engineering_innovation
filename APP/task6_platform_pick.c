@@ -5,7 +5,7 @@
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
 #define TASK6_MOVE_SPEED_RPM          60U
 #define TASK6_MOVE_ACCELERATION       240U
-#define TASK6_MOVE_SETTLE_MS         600U
+#define TASK6_MOVE_SETTLE_MS         400U
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK6_ROTATE_CLOCKWISE_SIGN   (-1)
 
@@ -240,23 +240,14 @@ static task6_platform_pick_result_t task6_set_tray_position(
 
 static uint8_t task6_last_staging_ring(const QR_TaskCode_t *qr_task)
 {
-    uint8_t index;
-    uint8_t last_color;
-
     if (qr_task == NULL)
     {
         return 0U;
     }
-    last_color = qr_task->second_batch_color[
+
+    /* 任务5按第一批物料的放置顺序结束，直接取最后一件的暂存环位。 */
+    return qr_task->first_batch_position[
         TASK6_PLATFORM_PICK_ITEM_COUNT - 1U];
-    for (index = 0U; index < QR_BATCH_ITEM_COUNT; index++)
-    {
-        if (qr_task->first_batch_color[index] == last_color)
-        {
-            return qr_task->first_batch_position[index];
-        }
-    }
-    return 0U;
 }
 
 task6_platform_pick_result_t task6_platform_pick_init(

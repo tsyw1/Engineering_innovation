@@ -87,6 +87,7 @@ add_executable(${CMAKE_PROJECT_NAME}
         APP/target_ring_place_test.h
         BSP/screen.c
         BSP/screen.h
+        BSP/start_zone.h
         BSP/IMU_UART.c
         BSP/IMU_UART.h
         Algorithm/IMU_GYRO_CALIBRATION.c

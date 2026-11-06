@@ -22,7 +22,7 @@ extern "C" {
 #define TASK5_TEMPORARY_RING_BACKWARD_RING_2_MM 850U
 #define TASK5_TEMPORARY_RING_BACKWARD_RING_3_MM 700U
 #define TASK5_TEMPORARY_RING_CENTER 2U
-#define TASK5_TEMPORARY_RING_TRAY_SETTLE_MS 500U
+#define TASK5_TEMPORARY_RING_TRAY_SETTLE_MS 400U
 
 typedef void (*task5_temporary_ring_status_fn)(uint8_t status,
                                                 const char *event);

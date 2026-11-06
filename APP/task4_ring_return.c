@@ -5,7 +5,7 @@
 /* 与底盘位置模式限速一致，保证等待时间按实际速度计算。 */
 #define TASK4_MOVE_SPEED_RPM         60U
 #define TASK4_MOVE_ACCELERATION      240U
-#define TASK4_MOVE_SETTLE_MS        600U
+#define TASK4_MOVE_SETTLE_MS        400U
 #define TASK4_PRE_ALIGN_RIGHT_MM      10U
 #define TASK4_PRE_ALIGN_CLOCKWISE_DEG 0.3f
 

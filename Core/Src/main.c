@@ -41,7 +41,6 @@
 
 #define APP_MOTOR_POWER_SETTLE_MS  2000U
 #define APP_CAN_SETTLE_MS            200U
-#define APP_AUTO_START_DELAY_MS     5000U
 #define APP_POSITION_REPORT_PERIOD_MS 200U
 
 static motor_bus_t s_motor_bus;
@@ -236,6 +235,15 @@ static uint8_t app_prepare(void)
     task9_temporary_stack_result_t task9_result;
     task10_return_home_result_t task10_result;
 
+    /* 提前挂接串口屏接收，初始化期间按下启动也会保留命令。
+     * 完成全部准备后才由主循环启动，ISR 不执行任何运动。 */
+    if ((screen_init(&s_screen, &huart5) != SCREEN_OK) ||
+        (screen_start_receive(&s_screen) != SCREEN_OK))
+    {
+        app_report_error("screen_rx_init_failed");
+        return 0U;
+    }
+
     /* 等待电机驱动器和 CAN 收发器完成上电自检。 */
     HAL_Delay(APP_MOTOR_POWER_SETTLE_MS);
 
@@ -257,7 +265,7 @@ static uint8_t app_prepare(void)
         app_report_error("arm_init_failed");
         return 0U;
     }
-    /* 上电阶段不执行机械臂调零，调零在第一段左移过程中执行。 */
+    /* 上电阶段不执行机械臂调零，调零在任务1横移过程中执行。 */
 
     chassis_result = mecanum_chassis_init_default(&s_chassis,
                                                   &s_motor_bus,
@@ -319,11 +327,6 @@ static uint8_t app_prepare(void)
         return 0U;
     }
 
-    if (screen_init(&s_screen, &huart5) != SCREEN_OK)
-    {
-        app_report_error("screen_init_failed");
-        return 0U;
-    }
     if (screen_reset_statistics(&s_screen) != SCREEN_OK)
     {
         app_report_error("screen_reset_failed");
@@ -483,13 +486,15 @@ static uint8_t app_prepare(void)
     s_active_task_number = 0U;
     app_write_status(TASK1_START_QR_STATUS_INIT,
                      "competition_flow_ready");
+    app_write_status(TASK1_START_QR_STATUS_WAIT_START,
+                     "waiting_uart5_0x31_zone1_or_0x32_zone2");
     return 1U;
 }
 
 int main(void)
 {
-    uint32_t power_on_tick;
-    uint8_t auto_start_sent = 0U;
+    uint8_t flow_started = 0U;
+    start_zone_t start_zone = START_ZONE_NONE;
     uint8_t task2_submitted = 0U;
     uint8_t task3_submitted = 0U;
     uint8_t task4_submitted = 0U;
@@ -503,7 +508,6 @@ int main(void)
     QR_TaskCode_t qr_task;
 
     HAL_Init();
-    power_on_tick = HAL_GetTick();
     SystemClock_Config();
 
     MX_GPIO_Init();
@@ -522,19 +526,34 @@ int main(void)
 
     while (1)
     {
+        screen_rx_task(&s_screen);
         app_report_chassis_position();
+        vision_uart_task(vision_uart_get_default());
 
-        /* 无实体启动按键，以上电时刻起 5 s 后自动启动一次。 */
-        if ((auto_start_sent == 0U) &&
-            ((uint32_t)(HAL_GetTick() - power_on_tick) >=
-             APP_AUTO_START_DELAY_MS))
+        /* 仅屏幕原始单字节 0x31/0x32 可启动；一轮路线锁定到复位。 */
+        if ((flow_started == 0U) &&
+            (screen_take_start_zone(&s_screen, &start_zone) != 0U))
         {
+            if ((task1_start_qr_set_start_zone(&s_task1, start_zone) !=
+                 TASK1_START_QR_OK) ||
+                (task10_return_home_set_start_zone(&s_task10, start_zone) !=
+                 TASK10_RETURN_HOME_OK))
+            {
+                app_report_error("start_zone_config_failed");
+            }
             s_active_task_number = 1U;
+            app_write_status(TASK1_START_QR_STATUS_MOVE,
+                             (start_zone == START_ZONE_2) ?
+                             "screen_start_zone2" : "screen_start_zone1");
             task1_start_qr_request_start(&s_task1);
-            auto_start_sent = 1U;
+            flow_started = 1U;
+        }
+        if (flow_started == 0U)
+        {
+            HAL_Delay(5U);
+            continue;
         }
 
-        vision_uart_task(vision_uart_get_default());
         s_active_task_number = 1U;
         (void)task1_start_qr_step(&s_task1);
 

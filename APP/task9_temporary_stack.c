@@ -5,7 +5,7 @@
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
 #define TASK9_MOVE_SPEED_RPM          60U
 #define TASK9_MOVE_ACCELERATION       240U
-#define TASK9_MOVE_SETTLE_MS         600U
+#define TASK9_MOVE_SETTLE_MS         400U
 #define TASK9_ROTATE_CLOCKWISE_SIGN  (-1)
 
 static void task9_status(task9_temporary_stack_t *task,
@@ -484,12 +484,16 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             task9_status(task,
                          TASK9_TEMPORARY_STACK_STATUS_PREPARE,
                          "task9_stack_prepare_start");
-            arm_result = arm_controller_prepare_stack_pick(task->arm);
-            if (arm_result != ARM_CONTROLLER_OK)
+            /* 仅第一件需要下降准备；后续已保持码垛高度、暂存区朝向和开爪。 */
+            if (task->item_index == 0U)
             {
-                return task9_fail(task,
-                                  TASK9_TEMPORARY_STACK_ARM_ERROR,
-                                  "task9_stack_prepare_failed");
+                arm_result = arm_controller_prepare_stack_pick(task->arm);
+                if (arm_result != ARM_CONTROLLER_OK)
+                {
+                    return task9_fail(task,
+                                      TASK9_TEMPORARY_STACK_ARM_ERROR,
+                                      "task9_stack_prepare_failed");
+                }
             }
             if (vision_fine_adjust_start(task->fine_adjust,
                                          VISION_UART_MODE_MATERIAL,
@@ -557,7 +561,10 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             task9_status(task,
                          TASK9_TEMPORARY_STACK_STATUS_PLACE,
                          "task9_stack_item_start");
-            arm_result = arm_controller_stack_item_from_tray(task->arm);
+            arm_result = ((task->item_index + 1U) <
+                          TASK9_TEMPORARY_STACK_ITEM_COUNT) ?
+                arm_controller_stack_item_from_tray_keep_low(task->arm) :
+                arm_controller_stack_item_from_tray(task->arm);
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task9_fail(task,
@@ -574,12 +581,16 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             return TASK9_TEMPORARY_STACK_OK;
 
         case TASK9_TEMPORARY_STACK_RETURN_TRAY:
-            arm_result = arm_controller_return_to_tray_direction(task->arm);
-            if (arm_result != ARM_CONTROLLER_OK)
+            /* 件间保持码垛高度、暂存区朝向和开爪；最后一件已抬升，再回盘关爪。 */
+            if ((task->item_index + 1U) >= TASK9_TEMPORARY_STACK_ITEM_COUNT)
             {
-                return task9_fail(task,
-                                  TASK9_TEMPORARY_STACK_ARM_ERROR,
-                                  "task9_return_to_tray_failed");
+                arm_result = arm_controller_return_to_tray_direction(task->arm);
+                if (arm_result != ARM_CONTROLLER_OK)
+                {
+                    return task9_fail(task,
+                                      TASK9_TEMPORARY_STACK_ARM_ERROR,
+                                      "task9_return_to_tray_failed");
+                }
             }
             task->item_index++;
             if (task->item_index >= TASK9_TEMPORARY_STACK_ITEM_COUNT)

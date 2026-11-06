@@ -95,6 +95,17 @@ vision_fine_adjust_result_t vision_fine_adjust_start(
     vision_uart_mode_t mode,
     uint8_t target_id);
 
+/* 提前发送模式命令，用于在长距离行驶期间完成摄像头模式切换。 */
+vision_fine_adjust_result_t vision_fine_adjust_preselect_mode(
+    vision_fine_adjust_t *adjust,
+    vision_uart_mode_t mode);
+
+/* 使用已提前选择的模式启动微调；清空旧帧但不重复发送模式命令。 */
+vision_fine_adjust_result_t vision_fine_adjust_start_preselected(
+    vision_fine_adjust_t *adjust,
+    vision_uart_mode_t mode,
+    uint8_t target_id);
+
 /* 在主循环周期调用；每个有效视觉帧只执行一次相对位置脉冲。
  * 目标 ID 暂不匹配时仍允许使用其他有效目标校准，但不会返回已对准。 */
 vision_fine_adjust_result_t vision_fine_adjust_step(
@@ -121,6 +132,13 @@ vision_fine_adjust_result_t vision_fine_adjust_prepare_pick_for_task(
     uint8_t sequence_index);
 
 vision_fine_adjust_result_t vision_fine_adjust_prepare_place_and_start(
+    vision_fine_adjust_t *adjust,
+    arm_controller_t *arm,
+    uint8_t target_ring);
+
+/* 完成放置姿态准备后，使用已提前选择的靶环模式启动微调。 */
+vision_fine_adjust_result_t
+vision_fine_adjust_prepare_place_and_start_preselected(
     vision_fine_adjust_t *adjust,
     arm_controller_t *arm,
     uint8_t target_ring);

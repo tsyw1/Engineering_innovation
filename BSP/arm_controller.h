@@ -20,7 +20,9 @@
 #define ARM_CONTROLLER_Z_HOLD_SPEED_RPM          120U
 #define ARM_CONTROLLER_Z_HOLD_ACCELERATION        20U
 #define ARM_CONTROLLER_Z_HOLD_PERIOD_MS          100U
-#define ARM_CONTROLLER_RELEASE_DELAY_MS         1000U
+#define ARM_CONTROLLER_RELEASE_DELAY_MS          500U
+#define ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS  100U
+#define ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS   100U
 #define ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS     100U
 #define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS      100U
 #define ARM_CONTROLLER_TRAY_GRIP_DELAY_MS        200U
@@ -143,6 +145,14 @@ arm_controller_result_t arm_controller_place_to_target_ring(
 arm_controller_result_t arm_controller_place_ring_item_from_tray(
     arm_controller_t *controller);
 
+/**
+ * 连续地面放置：取盘料并放到靶环，松爪后等待 100 ms，保持放置低位、
+ * 靶环朝向和夹爪打开。仅在已确认低位移车可避开物料时使用；
+ * 移到下一靶环并完成视觉对准后，再调用取盘料放置动作。
+ */
+arm_controller_result_t arm_controller_place_ring_item_from_tray_keep_low(
+    arm_controller_t *controller);
+
 /** 从物料盘取料并放到暂存区已有物料上，完成一次码垛放置。 */
 arm_controller_result_t arm_controller_place_stack_item_from_tray(
     arm_controller_t *controller);
@@ -197,8 +207,20 @@ arm_controller_result_t arm_controller_prepare_stack_place(
 arm_controller_result_t arm_controller_prepare_stack_pick(
     arm_controller_t *controller);
 
-/** 在暂存区视觉对准后，从物料盘取料并完成一次码垛放置。 */
+/** 已面向暂存区时，只打开夹爪并下降到码垛高度，不旋转 Z 轴。 */
+arm_controller_result_t arm_controller_prepare_stack_pick_aligned(
+    arm_controller_t *controller);
+
+/** 在暂存区视觉对准后，从物料盘取料并码垛，放完抬到最高点。 */
 arm_controller_result_t arm_controller_stack_item_from_tray(
+    arm_controller_t *controller);
+
+/**
+ * 连续码垛：取盘料并码垛，松爪后等待 100 ms，保持码垛高度、
+ * 暂存区朝向和夹爪打开。仅在已确认该高度可避开双层物料时使用；
+ * 移车并完成下一件视觉对准后，再抬升取盘料。
+ */
+arm_controller_result_t arm_controller_stack_item_from_tray_keep_low(
     arm_controller_t *controller);
 
 /** 码垛完成后逆时针旋转回物料盘方向，并保持夹爪闭合。 */

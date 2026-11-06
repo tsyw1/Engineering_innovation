@@ -3,6 +3,7 @@
 #include "material_tray_uart_control.h"
 #include "motor_TTL.h"
 #include "vision_uart.h"
+#include "screen.h"
 #include "usart.h"
 
 #include <string.h>
@@ -353,7 +354,7 @@ void QR_GetDiagnostics(QR_Diagnostics_t *diagnostics)
     }
 }
 
-/* UART4 只接收二维码，USART3 独立接收视觉 JSON。 */
+/* UART4 接收二维码，USART3 接收视觉 JSON，UART5 接收屏幕启动命令。 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     vision_uart_t *vision;
@@ -361,6 +362,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     jy901s_uart_on_rx_complete(huart);
     motor_ttl_on_rx_complete(huart);
     material_tray_uart_control_on_rx_complete(huart);
+    screen_on_rx_complete(huart);
 
     if (huart == &huart4)
     {
@@ -389,6 +391,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     jy901s_uart_on_error(huart);
     motor_ttl_on_error(huart);
     material_tray_uart_control_on_error(huart);
+    screen_on_error(huart);
 
     if (huart == &huart4)
     {
