@@ -3,16 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TARGET_RING_PLACE_TEST_RING_SPACING_MM       150
-#define TARGET_RING_PLACE_TEST_COARSE_SPEED_MPS      0.08f
-#define TARGET_RING_PLACE_TEST_COARSE_SETTLE_MS      300U
 #define TARGET_RING_PLACE_TEST_TRAY_SETTLE_MS        400U
 
 typedef struct
 {
     material_tray_position_t tray_position;
     uint8_t target_ring;
-    int16_t nominal_x_mm;
     const char *color_name;
 } target_ring_place_test_item_t;
 
@@ -22,19 +18,16 @@ static const target_ring_place_test_item_t s_test_items[
     {
         MATERIAL_TRAY_POSITION_1,
         1U,
-        TARGET_RING_PLACE_TEST_RING_SPACING_MM,
         "red"
     },
     {
         MATERIAL_TRAY_POSITION_2,
         2U,
-        0,
         "yellow"
     },
     {
         MATERIAL_TRAY_POSITION_3,
         3U,
-        -TARGET_RING_PLACE_TEST_RING_SPACING_MM,
         "blue"
     }
 };
@@ -98,50 +91,6 @@ static void target_ring_place_test_write_item_status(
     }
 }
 
-static target_ring_place_test_result_t target_ring_place_test_coarse_move(
-    target_ring_place_test_t *test,
-    int16_t target_x_mm)
-{
-    int16_t delta_x_mm;
-    uint16_t distance_mm;
-    uint32_t move_time_ms;
-    float vx_mps;
-    mecanum_result_t chassis_result;
-
-    delta_x_mm = (int16_t)(target_x_mm - test->nominal_x_mm);
-    if (delta_x_mm == 0)
-    {
-        return TARGET_RING_PLACE_TEST_OK;
-    }
-
-    distance_mm = (uint16_t)((delta_x_mm < 0) ?
-                             -delta_x_mm : delta_x_mm);
-    vx_mps = (delta_x_mm > 0) ?
-             TARGET_RING_PLACE_TEST_COARSE_SPEED_MPS :
-             -TARGET_RING_PLACE_TEST_COARSE_SPEED_MPS;
-    move_time_ms = (uint32_t)((float)distance_mm /
-                              TARGET_RING_PLACE_TEST_COARSE_SPEED_MPS);
-
-    chassis_result = mecanum_chassis_set_velocity(test->chassis,
-                                                  vx_mps,
-                                                  0.0f,
-                                                  0.0f);
-    if ((chassis_result != MECANUM_OK) &&
-        (chassis_result != MECANUM_CLAMPED))
-    {
-        return TARGET_RING_PLACE_TEST_CHASSIS_ERROR;
-    }
-
-    HAL_Delay(move_time_ms);
-    if (mecanum_chassis_stop(test->chassis) != MECANUM_OK)
-    {
-        return TARGET_RING_PLACE_TEST_CHASSIS_ERROR;
-    }
-    HAL_Delay(TARGET_RING_PLACE_TEST_COARSE_SETTLE_MS);
-    test->nominal_x_mm = target_x_mm;
-    return TARGET_RING_PLACE_TEST_OK;
-}
-
 target_ring_place_test_result_t target_ring_place_test_init(
     target_ring_place_test_t *test,
     arm_controller_t *arm,
@@ -164,8 +113,7 @@ target_ring_place_test_result_t target_ring_place_test_init(
     test->tray = tray;
     test->screen = screen;
     test->write_status = write_status;
-    /* 小车侧面对着靶环，初始位于 2 号环；车头朝 1 号环方向。 */
-    test->nominal_x_mm = 0;
+    /* 小车侧面对着靶环并固定在2号环，目标环位交给水平轴。 */
     test->state = TARGET_RING_PLACE_TEST_IDLE;
     return TARGET_RING_PLACE_TEST_OK;
 }
@@ -185,7 +133,6 @@ target_ring_place_test_result_t target_ring_place_test_start(
     }
 
     test->item_index = 0U;
-    test->nominal_x_mm = 0;
     test->state = TARGET_RING_PLACE_TEST_COARSE_MOVE;
     target_ring_place_test_status(test,
                                   TARGET_RING_PLACE_TEST_STATUS_INIT,
@@ -197,7 +144,6 @@ target_ring_place_test_result_t target_ring_place_test_step(
     target_ring_place_test_t *test)
 {
     const target_ring_place_test_item_t *item;
-    target_ring_place_test_result_t test_result;
     vision_fine_adjust_result_t adjust_result;
 
     if (test == NULL)
@@ -228,21 +174,7 @@ target_ring_place_test_result_t target_ring_place_test_step(
             target_ring_place_test_write_item_status(
                 test,
                 TARGET_RING_PLACE_TEST_STATUS_COARSE_MOVE,
-                "coarse_move_start");
-            test_result = target_ring_place_test_coarse_move(
-                test,
-                item->nominal_x_mm);
-            if (test_result != TARGET_RING_PLACE_TEST_OK)
-            {
-                return target_ring_place_test_fail(
-                    test,
-                    test_result,
-                    "coarse_move_failed");
-            }
-            target_ring_place_test_write_item_status(
-                test,
-                TARGET_RING_PLACE_TEST_STATUS_COARSE_MOVE,
-                "coarse_move_done");
+                "center_hold");
             test->state = TARGET_RING_PLACE_TEST_SELECT_TRAY;
             return TARGET_RING_PLACE_TEST_OK;
 

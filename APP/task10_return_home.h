@@ -12,7 +12,6 @@ extern "C" {
 #endif
 
 #define TASK10_RETURN_HOME_CENTER_RING 2U
-#define TASK10_RETURN_HOME_SPACING_MM 150U
 #define TASK10_RETURN_HOME_LEFT_MM 1900U
 #define TASK10_RETURN_HOME_BACKWARD_MM 1050U
 /* 启停区2从暂存区返回起点时，以车体前向移动980 mm。 */

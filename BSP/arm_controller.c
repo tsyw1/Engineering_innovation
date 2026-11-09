@@ -4,6 +4,8 @@
 
 #include "arm_controller.h"
 
+#include "usart.h"
+
 #include <math.h>
 
 #define ARM_CONTROLLER_POSITION_TIMEOUT_MS    30000U
@@ -11,8 +13,18 @@
 #define ARM_CONTROLLER_HOME_START_TIMEOUT_MS  3000U
 #define ARM_CONTROLLER_POLL_INTERVAL_MS       20U
 
-/* 当前工程只有一套机械臂；用它把位置命令和周期保持服务关联起来。 */
-static arm_controller_t *s_arm_controller;
+static arm_controller_result_t arm_controller_move_z_position(
+    arm_controller_t *controller,
+    uint16_t position);
+static arm_controller_result_t arm_controller_move_z_position_only(
+    arm_controller_t *controller,
+    uint16_t position);
+static arm_controller_result_t arm_controller_move_to_tray_direction(
+    arm_controller_t *controller);
+static uint16_t arm_controller_target_ring_z_position(
+    const arm_controller_t *controller);
+static float arm_controller_target_ring_horizontal_angle(
+    const arm_controller_t *controller);
 
 static arm_controller_result_t arm_controller_from_motor_result(
     motor_result_t result)
@@ -35,6 +47,34 @@ static arm_controller_result_t arm_controller_from_gripper_result(
 {
     return (result == GRIPPER_SERVO_OK) ?
            ARM_CONTROLLER_OK : ARM_CONTROLLER_MOTOR_ERROR;
+}
+
+static arm_controller_result_t arm_controller_open_gripper_at_angle(
+    arm_controller_t *controller,
+    uint16_t angle_deg)
+{
+    gripper_servo_result_t gripper_result;
+    uint16_t default_open_angle;
+
+    if ((controller == NULL) || (angle_deg > SERVO_MAX_ANGLE_DEG))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+
+    /* 仅本次动作临时使用指定张开角度，其他动作仍使用默认 95 度。 */
+    default_open_angle = controller->gripper.config.open_angle_deg;
+    controller->gripper.config.open_angle_deg = angle_deg;
+    gripper_result = gripper_servo_open(&controller->gripper);
+    controller->gripper.config.open_angle_deg = default_open_angle;
+    return arm_controller_from_gripper_result(gripper_result);
+}
+
+static arm_controller_result_t arm_controller_open_tray_gripper(
+    arm_controller_t *controller)
+{
+    return arm_controller_open_gripper_at_angle(
+        controller,
+        ARM_CONTROLLER_TRAY_PICK_OPEN_ANGLE_DEG);
 }
 
 static arm_controller_result_t arm_controller_release_gripper_delay(
@@ -71,6 +111,22 @@ static int64_t arm_controller_angle_to_pulse(float angle_deg)
     return (pulse >= 0.0) ?
            (int64_t)(pulse + 0.5) :
            (int64_t)(pulse - 0.5);
+}
+
+static arm_controller_result_t arm_controller_from_z_servo_result(
+    arm_z_servo_axis_result_t result)
+{
+    switch (result)
+    {
+        case ARM_Z_SERVO_AXIS_OK:
+            return ARM_CONTROLLER_OK;
+        case ARM_Z_SERVO_AXIS_INVALID_PARAM:
+            return ARM_CONTROLLER_INVALID_PARAM;
+        case ARM_Z_SERVO_AXIS_NOT_READY:
+            return ARM_CONTROLLER_NOT_READY;
+        default:
+            return ARM_CONTROLLER_MOTOR_ERROR;
+    }
 }
 
 static arm_controller_result_t arm_controller_wait_position(motor_t *motor)
@@ -164,13 +220,12 @@ static arm_controller_result_t arm_controller_wait_home(motor_t *motor)
     return ARM_CONTROLLER_TIMEOUT;
 }
 
-static arm_controller_result_t arm_controller_move_motor_angle(
+static arm_controller_result_t arm_controller_move_lift_angle(
     motor_t *motor,
     float angle_deg,
     motor_position_mode_t mode)
 {
     int64_t pulse;
-    int64_t hold_target_pulse;
     motor_result_t result;
 
     if ((motor == NULL) || (motor->bus == NULL) || !isfinite(angle_deg))
@@ -179,52 +234,189 @@ static arm_controller_result_t arm_controller_move_motor_angle(
     }
 
     pulse = arm_controller_angle_to_pulse(angle_deg);
-    if ((motor->id == ARM_CONTROLLER_Z_MOTOR_ID) &&
-        (s_arm_controller != NULL))
-    {
-        /* 新的旋转动作开始后，等待本次动作重新到位再进入保持。 */
-        s_arm_controller->z_last_hold_tick = 0U;
-    }
-    hold_target_pulse = pulse;
-    if ((motor->id == ARM_CONTROLLER_Z_MOTOR_ID) &&
-        (s_arm_controller != NULL))
-    {
-        if (mode == MOTOR_POSITION_ABSOLUTE)
-        {
-            hold_target_pulse = pulse;
-        }
-        else if (s_arm_controller->z_hold_valid != 0U)
-        {
-            hold_target_pulse = s_arm_controller->z_hold_target_pulse + pulse;
-        }
-        else if (motor->position_valid != 0U)
-        {
-            hold_target_pulse = motor->actual_position_pulse + pulse;
-        }
-    }
+    (void)mode;
     /* 清除上一条位置命令的到位缓存，再发送新的位置命令。 */
     motor->state_flags &= (uint8_t)~MOTOR_STATE_POSITION_REACHED;
     result = motor_set_position(motor,
                                 pulse,
-                                (motor->id == ARM_CONTROLLER_LIFT_MOTOR_ID) ?
-                                ARM_CONTROLLER_LIFT_SPEED_RPM :
-                                ARM_CONTROLLER_Z_SPEED_RPM,
-                                (motor->id == ARM_CONTROLLER_LIFT_MOTOR_ID) ?
-                                ARM_CONTROLLER_LIFT_ACCELERATION :
-                                ARM_CONTROLLER_Z_ACCELERATION,
-                                mode,
+                                ARM_CONTROLLER_LIFT_SPEED_RPM,
+                                ARM_CONTROLLER_LIFT_ACCELERATION,
+                                MOTOR_POSITION_ABSOLUTE,
                                 MOTOR_EXECUTE_NOW);
     if (result != MOTOR_OK)
     {
         return arm_controller_from_motor_result(result);
     }
-    if ((motor->id == ARM_CONTROLLER_Z_MOTOR_ID) &&
-        (s_arm_controller != NULL))
-    {
-        s_arm_controller->z_hold_target_pulse = hold_target_pulse;
-        s_arm_controller->z_hold_valid = 1U;
-    }
     return arm_controller_wait_position(motor);
+}
+
+static arm_controller_result_t arm_controller_move_horizontal_angle(
+    arm_controller_t *controller,
+    float angle_deg)
+{
+    int64_t pulse;
+    motor_result_t result;
+
+    if ((controller == NULL) || (controller->horizontal_motor.bus == NULL) ||
+        !isfinite(angle_deg))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+
+    pulse = arm_controller_angle_to_pulse(angle_deg);
+    controller->horizontal_motor.state_flags &=
+        (uint8_t)~MOTOR_STATE_POSITION_REACHED;
+    result = motor_set_position(&controller->horizontal_motor,
+                                pulse,
+                                ARM_CONTROLLER_HORIZONTAL_SPEED_RPM,
+                                ARM_CONTROLLER_HORIZONTAL_ACCELERATION,
+                                MOTOR_POSITION_ABSOLUTE,
+                                MOTOR_EXECUTE_NOW);
+    if (result != MOTOR_OK)
+    {
+        return arm_controller_from_motor_result(result);
+    }
+    return arm_controller_wait_position(&controller->horizontal_motor);
+}
+
+static arm_controller_result_t arm_controller_move_z_angle(
+    arm_controller_t *controller,
+    float angle_deg,
+    motor_position_mode_t mode)
+{
+    float target_angle_deg;
+
+    if ((controller == NULL) || (controller->initialized == 0U))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+    if ((controller->z_servo_axis.initialized == 0U) ||
+        (controller->z_servo_axis.hardware_bound == 0U))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+    if (!isfinite(angle_deg))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+
+    target_angle_deg = angle_deg;
+    if (mode == MOTOR_POSITION_RELATIVE_CURRENT)
+    {
+        /* 兼容旧动作表：正向表示物料盘，负向表示当前靶环。 */
+        return arm_controller_move_z_position(
+            controller,
+            (angle_deg >= 0.0f) ?
+            ARM_CONTROLLER_Z_TRAY_POSITION :
+            arm_controller_target_ring_z_position(controller));
+    }
+    else if (mode != MOTOR_POSITION_ABSOLUTE)
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+
+    if ((target_angle_deg < 0.0f) || (target_angle_deg > 4095.0f))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    return arm_controller_move_z_position(controller,
+                                          (uint16_t)target_angle_deg);
+}
+
+static arm_controller_result_t arm_controller_move_z_position(
+    arm_controller_t *controller,
+    uint16_t position)
+{
+    if ((controller == NULL) || (controller->initialized == 0U))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+    {
+        arm_z_servo_axis_result_t result;
+
+        result = arm_z_servo_axis_move_to_position(
+            &controller->z_servo_axis,
+            position);
+        if (result != ARM_Z_SERVO_AXIS_OK)
+        {
+            return arm_controller_from_z_servo_result(result);
+        }
+    }
+
+    /* Z 轴旋转完成后，在安全高度设置水平轴目标位置。 */
+    return arm_controller_move_horizontal_angle(
+        controller,
+        (position == ARM_CONTROLLER_Z_TRAY_POSITION) ?
+        ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG :
+        arm_controller_target_ring_horizontal_angle(controller));
+}
+
+static arm_controller_result_t arm_controller_move_z_position_only(
+    arm_controller_t *controller,
+    uint16_t position)
+{
+    arm_z_servo_axis_result_t result;
+
+    if ((controller == NULL) || (controller->initialized == 0U))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+    result = arm_z_servo_axis_move_to_position(
+        &controller->z_servo_axis,
+        position);
+    return arm_controller_from_z_servo_result(result);
+}
+
+static arm_controller_result_t arm_controller_move_to_tray_direction(
+    arm_controller_t *controller)
+{
+    arm_controller_result_t result;
+
+    result = arm_controller_move_z_position_only(
+        controller,
+        ARM_CONTROLLER_Z_TRAY_POSITION);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+
+    /* 总线舵机旋转命令异步执行，先等待旋转稳定，再伸长水平轴。 */
+    HAL_Delay(ARM_CONTROLLER_TRAY_ROTATION_SETTLE_MS);
+    return arm_controller_move_horizontal_angle(
+        controller,
+        ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG);
+}
+
+static uint16_t arm_controller_target_ring_z_position(
+    const arm_controller_t *controller)
+{
+    if (controller == NULL)
+    {
+        return ARM_CONTROLLER_Z_RING_2_POSITION;
+    }
+    switch (controller->target_ring)
+    {
+        case 1U: return ARM_CONTROLLER_Z_RING_1_POSITION;
+        case 3U: return ARM_CONTROLLER_Z_RING_3_POSITION;
+        case 2U:
+        default: return ARM_CONTROLLER_Z_RING_2_POSITION;
+    }
+}
+
+static float arm_controller_target_ring_horizontal_angle(
+    const arm_controller_t *controller)
+{
+    if (controller == NULL)
+    {
+        return ARM_CONTROLLER_HORIZONTAL_RING_2_ANGLE_DEG;
+    }
+    switch (controller->target_ring)
+    {
+        case 1U: return ARM_CONTROLLER_HORIZONTAL_RING_1_ANGLE_DEG;
+        case 3U: return ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG;
+        case 2U:
+        default: return ARM_CONTROLLER_HORIZONTAL_RING_2_ANGLE_DEG;
+    }
 }
 
 arm_controller_result_t arm_controller_init(arm_controller_t *controller,
@@ -232,6 +424,8 @@ arm_controller_result_t arm_controller_init(arm_controller_t *controller,
 {
     motor_result_t result;
     arm_controller_result_t controller_result;
+    arm_z_servo_axis_config_t z_servo_config;
+    arm_z_servo_axis_result_t z_servo_result;
 
     if ((controller == NULL) || (bus == NULL))
     {
@@ -240,22 +434,18 @@ arm_controller_result_t arm_controller_init(arm_controller_t *controller,
 
     controller->bus = bus;
     controller->initialized = 0U;
-    controller->z_hold_target_pulse = 0;
-    controller->z_last_hold_tick = 0U;
-    controller->z_hold_valid = 0U;
-    s_arm_controller = controller;
-
+    controller->target_ring = 2U;
     result = motor_init(&controller->lift_motor,
                         bus,
-                        ARM_CONTROLLER_LIFT_MOTOR_ID);
+                        ARM_CONTROLLER_VERTICAL_MOTOR_ID);
     if (result != MOTOR_OK)
     {
         return arm_controller_from_motor_result(result);
     }
 
-    result = motor_init(&controller->z_motor,
+    result = motor_init(&controller->horizontal_motor,
                         bus,
-                        ARM_CONTROLLER_Z_MOTOR_ID);
+                        ARM_CONTROLLER_HORIZONTAL_MOTOR_ID);
     if (result != MOTOR_OK)
     {
         return arm_controller_from_motor_result(result);
@@ -263,7 +453,32 @@ arm_controller_result_t arm_controller_init(arm_controller_t *controller,
 
     controller->initialized = 1U;
 
-    /* 初始化阶段只让升降轴回最高点并建立升降轴零点。 */
+    arm_z_servo_axis_config_default(&z_servo_config);
+    z_servo_result = arm_z_servo_axis_bind_usart2(
+        &controller->z_servo_axis,
+        &z_servo_config);
+    if (z_servo_result != ARM_Z_SERVO_AXIS_OK)
+    {
+        return arm_controller_from_z_servo_result(z_servo_result);
+    }
+    z_servo_result = arm_z_servo_axis_start(&controller->z_servo_axis);
+    if (z_servo_result != ARM_Z_SERVO_AXIS_OK)
+    {
+        return arm_controller_from_z_servo_result(z_servo_result);
+    }
+
+    /* 上电第一步先让夹爪回到闭合 0 度，避免后续机械臂动作时夹爪张开。 */
+    {
+        gripper_servo_config_t gripper_config;
+        gripper_servo_config_default(&gripper_config);
+        if (gripper_servo_init(&controller->gripper, &gripper_config) !=
+            GRIPPER_SERVO_OK)
+        {
+            return ARM_CONTROLLER_MOTOR_ERROR;
+        }
+    }
+
+    /* 上电执行电机 5 的碰撞回零；回零方向由上位机保存的 O_Dir 参数决定。 */
     controller->lift_motor.home_flags = 0U;
     result = motor_home(&controller->lift_motor,
                         ARM_CONTROLLER_LIFT_HOME_MODE,
@@ -279,77 +494,146 @@ arm_controller_result_t arm_controller_init(arm_controller_t *controller,
         return controller_result;
     }
 
-    /* 碰撞回零完成后，再明确发送一次当前位置清零。 */
+    /* 碰撞回零完成后，将当前位置明确设置为 0 度。 */
     result = motor_clear_position(&controller->lift_motor);
     if (result != MOTOR_OK)
     {
         return arm_controller_from_motor_result(result);
     }
 
+    /* 水平轴不执行自动回零；上电前由人工置于最里侧 0 度。 */
+    result = motor_clear_position(&controller->horizontal_motor);
+    if (result != MOTOR_OK)
     {
-        gripper_servo_config_t gripper_config;
-        gripper_servo_config_default(&gripper_config);
-        if (gripper_servo_init(&controller->gripper, &gripper_config) !=
-            GRIPPER_SERVO_OK)
-        {
-            return ARM_CONTROLLER_MOTOR_ERROR;
-        }
+        return arm_controller_from_motor_result(result);
     }
 
+    /* 两个电机都完成安全归零后，再转到车身物料盘方向。 */
+    z_servo_result = arm_z_servo_axis_move_to_position(
+        &controller->z_servo_axis,
+        ARM_CONTROLLER_Z_TRAY_POSITION);
+    if (z_servo_result != ARM_Z_SERVO_AXIS_OK)
+    {
+        return arm_controller_from_z_servo_result(z_servo_result);
+    }
+
+    return ARM_CONTROLLER_OK;
+}
+
+arm_controller_result_t arm_controller_bind_z_servo(
+    arm_controller_t *controller,
+    UART_HandleTypeDef *huart,
+    uint8_t servo_id,
+    const arm_z_servo_axis_config_t *config)
+{
+    arm_z_servo_axis_result_t result;
+
+    if ((controller == NULL) || (config == NULL))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    result = arm_z_servo_axis_bind(&controller->z_servo_axis,
+                                   huart,
+                                   servo_id,
+                                   config);
+    if (result == ARM_Z_SERVO_AXIS_OK)
+    {
+        if ((huart != NULL) && (servo_id != 0U))
+        {
+            return arm_controller_from_z_servo_result(
+                arm_z_servo_axis_start(&controller->z_servo_axis));
+        }
+        return ARM_CONTROLLER_OK;
+    }
+    if (result == ARM_Z_SERVO_AXIS_INVALID_PARAM)
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    if (result == ARM_Z_SERVO_AXIS_NOT_READY)
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+    return ARM_CONTROLLER_MOTOR_ERROR;
+}
+
+arm_controller_result_t arm_controller_bind_z_servo_usart2(
+    arm_controller_t *controller,
+    const arm_z_servo_axis_config_t *config)
+{
+    if ((controller == NULL) || (config == NULL))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+
+    return arm_controller_bind_z_servo(controller,
+                                       &huart2,
+                                       (config->servo_id != 0U) ?
+                                       config->servo_id :
+                                       ARM_Z_SERVO_AXIS_DEFAULT_SERVO_ID,
+                                       config);
+}
+
+arm_controller_result_t arm_controller_init_horizontal_axis(
+    arm_controller_t *controller,
+    motor_t *motor,
+    uint8_t motor_id,
+    const arm_horizontal_axis_config_t *config)
+{
+    arm_horizontal_axis_result_t result;
+
+    if ((controller == NULL) || (controller->bus == NULL) ||
+        (motor == NULL) || (config == NULL))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    result = arm_horizontal_axis_init(&controller->horizontal_axis,
+                                      controller->bus,
+                                      motor,
+                                      motor_id,
+                                      config);
+    switch (result)
+    {
+        case ARM_HORIZONTAL_AXIS_OK:
+            return ARM_CONTROLLER_OK;
+        case ARM_HORIZONTAL_AXIS_INVALID_PARAM:
+            return ARM_CONTROLLER_INVALID_PARAM;
+        case ARM_HORIZONTAL_AXIS_BUSY:
+            return ARM_CONTROLLER_BUSY;
+        case ARM_HORIZONTAL_AXIS_NOT_READY:
+            return ARM_CONTROLLER_NOT_READY;
+        default:
+            return ARM_CONTROLLER_MOTOR_ERROR;
+    }
+}
+
+arm_controller_result_t arm_controller_set_target_ring(
+    arm_controller_t *controller,
+    uint8_t target_ring)
+{
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (target_ring < 1U) || (target_ring > 3U))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    controller->target_ring = target_ring;
     return ARM_CONTROLLER_OK;
 }
 
 arm_controller_result_t arm_controller_hold_z_position(
     arm_controller_t *controller)
 {
-    uint32_t now;
-    motor_result_t result;
-
     if ((controller == NULL) || (controller->initialized == 0U) ||
-        (controller->bus == NULL))
+        (controller->z_servo_axis.initialized == 0U) ||
+        (controller->z_servo_axis.hardware_bound == 0U))
     {
         return ARM_CONTROLLER_NOT_READY;
     }
-    if (controller->z_hold_valid == 0U)
-    {
-        return ARM_CONTROLLER_OK;
-    }
-
-    /* 位置动作尚未到位时不打断原有轨迹。 */
-    if ((controller->z_motor.state_flags & MOTOR_STATE_POSITION_REACHED) == 0U &&
-        (controller->z_last_hold_tick == 0U))
-    {
-        return ARM_CONTROLLER_OK;
-    }
-
-    now = HAL_GetTick();
-    if ((uint32_t)(now - controller->z_last_hold_tick) <
-        ARM_CONTROLLER_Z_HOLD_PERIOD_MS)
-    {
-        return ARM_CONTROLLER_OK;
-    }
-
-    /* 到位后用绝对目标轻量重发，驱动器会在负载扰动后回到原位置。 */
-    result = motor_set_position(&controller->z_motor,
-                                controller->z_hold_target_pulse,
-                                ARM_CONTROLLER_Z_HOLD_SPEED_RPM,
-                                ARM_CONTROLLER_Z_HOLD_ACCELERATION,
-                                MOTOR_POSITION_ABSOLUTE,
-                                MOTOR_EXECUTE_NOW);
-    if (result != MOTOR_OK)
-    {
-        return arm_controller_from_motor_result(result);
-    }
-    controller->z_motor.state_flags &=
-        (uint8_t)~MOTOR_STATE_POSITION_REACHED;
-    controller->z_last_hold_tick = now;
     return ARM_CONTROLLER_OK;
 }
 
 arm_controller_result_t arm_controller_zero(arm_controller_t *controller)
 {
     arm_controller_result_t result;
-    motor_result_t motor_result;
     gripper_servo_result_t gripper_result;
 
     if ((controller == NULL) || (controller->initialized == 0U) ||
@@ -365,56 +649,8 @@ arm_controller_result_t arm_controller_zero(arm_controller_t *controller)
         return arm_controller_from_gripper_result(gripper_result);
     }
 
-    /* 机械顺时针 250 度：根据方向约定，电机执行 CCW 负脉冲。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        ARM_CONTROLLER_Z_PRE_HOME_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-
-    /* 升降电机负角度为 CCW，执行下降 -2948.9 度。 */
-    result = arm_controller_move_motor_angle(
-        &controller->lift_motor,
-        ARM_CONTROLLER_LIFT_DOWN_ANGLE_DEG,
-        MOTOR_POSITION_ABSOLUTE);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-
-    /* Z 轴顺时针碰撞回零：驱动器参数中的 CCW 对应机械顺时针。 */
-    controller->z_motor.home_flags = 0U;
-    motor_result = motor_home(&controller->z_motor,
-                              ARM_CONTROLLER_Z_HOME_MODE,
-                              MOTOR_EXECUTE_NOW);
-    if (motor_result != MOTOR_OK)
-    {
-        return arm_controller_from_motor_result(motor_result);
-    }
-
-    result = arm_controller_wait_home(&controller->z_motor);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-
-    /* Z 轴碰撞回零成功后，清除旋转电机当前位置。 */
-    motor_result = motor_clear_position(&controller->z_motor);
-    if (motor_result != MOTOR_OK)
-    {
-        return arm_controller_from_motor_result(motor_result);
-    }
-    controller->z_hold_target_pulse = 0;
-    controller->z_hold_valid = 1U;
-    controller->z_last_hold_tick = HAL_GetTick();
-    controller->z_motor.actual_position_pulse = 0;
-    controller->z_motor.position_valid = 1U;
-
-    /* 5 号电机回零完成后，6 号升降电机回到最高点 0 度。 */
-    result = arm_controller_move_motor_angle(
+    /* 调零时重新确认升降轴最高点 0 度。 */
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_ZERO_LIFT_HOME_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -423,11 +659,16 @@ arm_controller_result_t arm_controller_zero(arm_controller_t *controller)
         return result;
     }
 
-    /* 升降轴到位后，5 号电机从零点机械逆时针旋转 270 度。 */
-    return arm_controller_move_motor_angle(
-        &controller->z_motor,
-        ARM_CONTROLLER_ZERO_Z_AFTER_HOME_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
+    /* 水平轴不主动运动；调用者应在上电前手动置于最里侧后清零。 */
+    if (motor_clear_position(&controller->horizontal_motor) != MOTOR_OK)
+    {
+        return ARM_CONTROLLER_MOTOR_ERROR;
+    }
+
+    /* 垂直轴升高后才允许旋转 Z 轴，避免机构干涉。 */
+    return arm_controller_move_z_position(
+        controller,
+        ARM_CONTROLLER_Z_TRAY_POSITION);
 }
 
 arm_controller_result_t arm_controller_pick_and_place(
@@ -435,7 +676,6 @@ arm_controller_result_t arm_controller_pick_and_place(
 {
     arm_controller_result_t result;
     gripper_servo_result_t gripper_result;
-
     if ((controller == NULL) || (controller->initialized == 0U) ||
         (controller->bus == NULL))
     {
@@ -448,9 +688,10 @@ arm_controller_result_t arm_controller_pick_and_place(
     {
         return arm_controller_from_gripper_result(gripper_result);
     }
+    HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
     /* 上升到最高点 0 度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -459,23 +700,29 @@ arm_controller_result_t arm_controller_pick_and_place(
         return result;
     }
 
-    /* 机械逆时针旋转 180 度，电机方向为 CW。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
+    /* 升高后先伸出水平轴到物料盘方向，并保持 200 ms。 */
+    result = arm_controller_move_horizontal_angle(
+        controller,
+        ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
     }
+    HAL_Delay(ARM_CONTROLLER_PLATFORM_ALIGN_SETTLE_MS);
 
-    /* 延时后打开夹爪，放下物料。 */
-    result = arm_controller_release_gripper_delay(
+    /* 水平轴到位后再转到车身物料盘方向。 */
+    result = arm_controller_move_z_position_only(
         controller,
-        ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS);
+        ARM_CONTROLLER_Z_TRAY_POSITION);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
+    }
+    /* Z 轴到位后打开夹爪释放物料。 */
+    gripper_result = gripper_servo_open(&controller->gripper);
+    if (gripper_result != GRIPPER_SERVO_OK)
+    {
+        return arm_controller_from_gripper_result(gripper_result);
     }
 
     return ARM_CONTROLLER_OK;
@@ -521,7 +768,7 @@ arm_controller_result_t arm_controller_ground_pick(
     }
 
     /* 上升到最高点 0 度；该动作完成后才向上层报告抓取成功。 */
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -538,11 +785,8 @@ arm_controller_result_t arm_controller_place_to_tray(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 机械逆时针旋转 180 度，电机方向为 CW。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
+    /* 升高后再转到车身物料盘方向。 */
+    result = arm_controller_move_to_tray_direction(controller);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
@@ -592,17 +836,25 @@ arm_controller_result_t arm_controller_pick_from_tray(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 调零结束后机械臂已在物料盘上方，先打开夹爪准备取料。 */
-    gripper_result = gripper_servo_open(&controller->gripper);
-    if (gripper_result != GRIPPER_SERVO_OK)
+    /* 从小车物料盘取料时只打开 20 度，避免干涉相邻物料。 */
+    result = arm_controller_open_tray_gripper(controller);
+    if (result != ARM_CONTROLLER_OK)
     {
-        return arm_controller_from_gripper_result(gripper_result);
+        return result;
     }
 
+    /* 先在最高点确认物料盘方向和水平伸长位置，再下降。 */
+    result = arm_controller_move_z_position(
+        controller,
+        ARM_CONTROLLER_Z_TRAY_POSITION);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
     /* 下降到物料盘取料高度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
-        ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG,
+        ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
     if (result != ARM_CONTROLLER_OK)
     {
@@ -618,7 +870,7 @@ arm_controller_result_t arm_controller_pick_from_tray(
     HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
     /* 夹紧物料并保持 200 ms 后，再抬高到最高点。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -641,20 +893,26 @@ arm_controller_result_t arm_controller_place_to_target_ring(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 机械顺时针旋转 180 度，返回靶环方向。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
+    /* 先在最高点转到目标靶环方向，再下降。 */
+    result = arm_controller_move_z_position(
+        controller,
+        arm_controller_target_ring_z_position(controller));
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    result = arm_controller_move_horizontal_angle(
+        controller,
+        arm_controller_target_ring_horizontal_angle(controller));
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
     }
 
     /* 下降到靶环放料高度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
-        ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG,
+        ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
     if (result != ARM_CONTROLLER_OK)
     {
@@ -669,7 +927,7 @@ arm_controller_result_t arm_controller_place_to_target_ring(
     }
 
     /* 最后上升到最高点。 */
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -689,7 +947,7 @@ static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal
     }
 
     /* 视觉对准结束时机械臂在地面放置姿态，先抬升并回到物料盘方向。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -697,23 +955,21 @@ static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
+    result = arm_controller_move_z_position(
+        controller,
+        ARM_CONTROLLER_Z_TRAY_POSITION);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
     }
-
-    gripper_result = gripper_servo_open(&controller->gripper);
-    if (gripper_result != GRIPPER_SERVO_OK)
+    result = arm_controller_open_tray_gripper(controller);
+    if (result != ARM_CONTROLLER_OK)
     {
-        return arm_controller_from_gripper_result(gripper_result);
+        return result;
     }
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
-        ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG,
+        ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
     if (result != ARM_CONTROLLER_OK)
     {
@@ -727,7 +983,7 @@ static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal
     }
     HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -735,17 +991,23 @@ static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
+    result = arm_controller_move_z_position(
+        controller,
+        arm_controller_target_ring_z_position(controller));
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_horizontal_angle(
+        controller,
+        arm_controller_target_ring_horizontal_angle(controller));
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
-        ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG,
+        ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
     if (result != ARM_CONTROLLER_OK)
     {
@@ -763,7 +1025,7 @@ static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal
         HAL_Delay(ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS);
         return ARM_CONTROLLER_OK;
     }
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -794,7 +1056,7 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
     }
 
     /* 视觉对准完成时机械臂面向暂存区、位于地面放置高度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -802,8 +1064,8 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -811,12 +1073,12 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
         return result;
     }
 
-    gripper_result = gripper_servo_open(&controller->gripper);
-    if (gripper_result != GRIPPER_SERVO_OK)
+    result = arm_controller_open_tray_gripper(controller);
+    if (result != ARM_CONTROLLER_OK)
     {
-        return arm_controller_from_gripper_result(gripper_result);
+        return result;
     }
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -831,7 +1093,7 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
     }
     HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -839,8 +1101,8 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    result = arm_controller_move_z_angle(
+        controller,
         -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -849,7 +1111,7 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
     }
 
     /* 下降到暂存区第一批物料顶部的码垛高度后松开。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -862,7 +1124,7 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
     {
         return result;
     }
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -880,9 +1142,9 @@ arm_controller_result_t arm_controller_finish_place(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 机械逆时针旋转 180 度，电机方向为 CW。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    /* Z 轴舵机转到机械逆时针方向。 */
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -904,7 +1166,6 @@ static arm_controller_result_t arm_controller_prepare_position(
     arm_controller_t *controller)
 {
     arm_controller_result_t result;
-    gripper_servo_result_t gripper_result;
 
     if ((controller == NULL) || (controller->initialized == 0U) ||
         (controller->bus == NULL))
@@ -912,9 +1173,9 @@ static arm_controller_result_t arm_controller_prepare_position(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 从当前位置机械顺时针旋转 180 度，电机使用 CCW 负脉冲。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    /* Z 轴舵机转到机械顺时针方向。 */
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PREPARE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -922,13 +1183,15 @@ static arm_controller_result_t arm_controller_prepare_position(
         return result;
     }
 
-    gripper_result = gripper_servo_open(&controller->gripper);
-    if (gripper_result != GRIPPER_SERVO_OK)
-    {
-        return arm_controller_from_gripper_result(gripper_result);
-    }
-
     return ARM_CONTROLLER_OK;
+}
+
+arm_controller_result_t arm_controller_preposition_platform_z(
+    arm_controller_t *controller)
+{
+    return arm_controller_move_z_position_only(
+        controller,
+        ARM_CONTROLLER_Z_PLATFORM_POSITION);
 }
 
 arm_controller_result_t arm_controller_prepare_platform_pick(
@@ -936,13 +1199,29 @@ arm_controller_result_t arm_controller_prepare_platform_pick(
 {
     arm_controller_result_t result;
 
-    result = arm_controller_prepare_position(controller);
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (controller->bus == NULL))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+
+    result = arm_controller_open_gripper_at_angle(
+        controller,
+        GRIPPER_SERVO_DEFAULT_OPEN_ANGLE_DEG);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
     }
 
-    return arm_controller_move_motor_angle(
+    result = arm_controller_move_z_position_only(
+        controller,
+        ARM_CONTROLLER_Z_PLATFORM_POSITION);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_PICK_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -951,7 +1230,7 @@ arm_controller_result_t arm_controller_prepare_platform_pick(
 arm_controller_result_t arm_controller_prepare_platform_pick_aligned(
     arm_controller_t *controller)
 {
-    gripper_servo_result_t gripper_result;
+    arm_controller_result_t result;
 
     if ((controller == NULL) || (controller->initialized == 0U) ||
         (controller->bus == NULL))
@@ -959,13 +1238,16 @@ arm_controller_result_t arm_controller_prepare_platform_pick_aligned(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    gripper_result = gripper_servo_open(&controller->gripper);
-    if (gripper_result != GRIPPER_SERVO_OK)
+    result = arm_controller_open_gripper_at_angle(
+        controller,
+        GRIPPER_SERVO_DEFAULT_OPEN_ANGLE_DEG);
+    if (result != ARM_CONTROLLER_OK)
     {
-        return arm_controller_from_gripper_result(gripper_result);
+        return result;
     }
 
-    return arm_controller_move_motor_angle(
+    /* Z 轴已由调用者预置到平台位置，平台取料阶段不再旋转或伸缩。 */
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_PICK_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -976,13 +1258,28 @@ arm_controller_result_t arm_controller_prepare_ground_pick(
 {
     arm_controller_result_t result;
 
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (controller->bus == NULL))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+
+    /* 夹取动作先打开夹爪，再移动 Z 轴、水平轴和升降轴。 */
+    result = arm_controller_open_gripper_at_angle(
+        controller,
+        GRIPPER_SERVO_DEFAULT_OPEN_ANGLE_DEG);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+
     result = arm_controller_prepare_position(controller);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
     }
 
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -999,7 +1296,7 @@ arm_controller_result_t arm_controller_prepare_ground_place(
         return result;
     }
 
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -1017,14 +1314,21 @@ arm_controller_result_t arm_controller_prepare_ground_pick_aligned(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 任务3结束时机械臂已经面向靶环，此处不重复旋转 Z 轴。 */
+    /* 夹取动作先打开夹爪，再移动水平轴和升降轴。 */
     gripper_result = gripper_servo_open(&controller->gripper);
     if (gripper_result != GRIPPER_SERVO_OK)
     {
         return arm_controller_from_gripper_result(gripper_result);
     }
 
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_horizontal_angle(
+        controller,
+        arm_controller_target_ring_horizontal_angle(controller));
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -1049,11 +1353,8 @@ arm_controller_result_t arm_controller_ground_pick_to_tray_and_return(
         return result;
     }
 
-    /* 机械逆时针旋转 180 度，转到物料盘方向。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
+    /* Z 轴舵机转到物料盘方向，并等待水平轴伸长到位。 */
+    result = arm_controller_move_to_tray_direction(controller);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
@@ -1070,13 +1371,81 @@ arm_controller_result_t arm_controller_ground_pick_to_tray_and_return(
     HAL_Delay(ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS);
 
     /* 夹爪打开并稳定后，顺时针旋转 180 度回到靶环方向。 */
-    return arm_controller_move_motor_angle(
-        &controller->z_motor,
+    return arm_controller_move_z_angle(
+        controller,
         -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
 }
 
 arm_controller_result_t arm_controller_prepare_ground_place_aligned(
+    arm_controller_t *controller)
+{
+    arm_controller_result_t result;
+
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (controller->bus == NULL))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+
+    /* 放置动作保持夹爪闭合，完成旋转、伸缩和下降后由放置函数松爪。 */
+    result = arm_controller_move_horizontal_angle(
+        controller,
+        arm_controller_target_ring_horizontal_angle(controller));
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    result = arm_controller_move_lift_angle(
+        &controller->lift_motor,
+        ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG,
+        MOTOR_POSITION_ABSOLUTE);
+    return result;
+}
+
+arm_controller_result_t arm_controller_prepare_target_ring_hold(
+    arm_controller_t *controller)
+{
+    arm_controller_result_t result;
+
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (controller->bus == NULL))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+    /* Z 轴舵机转回靶环方向。 */
+    result = arm_controller_move_z_angle(
+        controller,
+        -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
+        MOTOR_POSITION_RELATIVE_CURRENT);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    return arm_controller_move_lift_angle(
+        &controller->lift_motor,
+        ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG,
+        MOTOR_POSITION_ABSOLUTE);
+}
+
+arm_controller_result_t arm_controller_prepare_stack_place(
+    arm_controller_t *controller)
+{
+    arm_controller_result_t result;
+
+    result = arm_controller_prepare_position(controller);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+
+    return arm_controller_move_lift_angle(
+        &controller->lift_motor,
+        ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
+        MOTOR_POSITION_ABSOLUTE);
+}
+
+arm_controller_result_t arm_controller_prepare_stack_pick(
     arm_controller_t *controller)
 {
     arm_controller_result_t result;
@@ -1094,69 +1463,9 @@ arm_controller_result_t arm_controller_prepare_ground_place_aligned(
         return arm_controller_from_gripper_result(gripper_result);
     }
 
-    result = arm_controller_move_motor_angle(
-        &controller->lift_motor,
-        ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG,
-        MOTOR_POSITION_ABSOLUTE);
-    return result;
-}
-
-arm_controller_result_t arm_controller_prepare_target_ring_hold(
-    arm_controller_t *controller)
-{
-    arm_controller_result_t result;
-
-    if ((controller == NULL) || (controller->initialized == 0U) ||
-        (controller->bus == NULL))
-    {
-        return ARM_CONTROLLER_NOT_READY;
-    }
-    /* 机械顺时针旋转 180 度，回到靶环方向。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
-        -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
-        MOTOR_POSITION_RELATIVE_CURRENT);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-    return arm_controller_move_motor_angle(
-        &controller->lift_motor,
-        ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG,
-        MOTOR_POSITION_ABSOLUTE);
-}
-
-arm_controller_result_t arm_controller_prepare_stack_place(
-    arm_controller_t *controller)
-{
-    arm_controller_result_t result;
-
-    result = arm_controller_prepare_position(controller);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-
-    return arm_controller_move_motor_angle(
-        &controller->lift_motor,
-        ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
-        MOTOR_POSITION_ABSOLUTE);
-}
-
-arm_controller_result_t arm_controller_prepare_stack_pick(
-    arm_controller_t *controller)
-{
-    arm_controller_result_t result;
-
-    if ((controller == NULL) || (controller->initialized == 0U) ||
-        (controller->bus == NULL))
-    {
-        return ARM_CONTROLLER_NOT_READY;
-    }
-
     /* 任务8结束时机械臂在物料盘最高点，顺时针转到暂存区方向。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PREPARE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -1182,7 +1491,7 @@ arm_controller_result_t arm_controller_prepare_stack_pick_aligned(
     {
         return arm_controller_from_gripper_result(gripper_result);
     }
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -1202,7 +1511,7 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
     }
 
     /* 视觉对准完成时位于暂存区码垛高度，先抬升再回物料盘。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -1210,8 +1519,8 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -1219,12 +1528,12 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
         return result;
     }
 
-    gripper_result = gripper_servo_open(&controller->gripper);
-    if (gripper_result != GRIPPER_SERVO_OK)
+    result = arm_controller_open_tray_gripper(controller);
+    if (result != ARM_CONTROLLER_OK)
     {
-        return arm_controller_from_gripper_result(gripper_result);
+        return result;
     }
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -1239,7 +1548,7 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
     }
     HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -1247,15 +1556,15 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PREPARE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
     }
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -1274,7 +1583,7 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
         HAL_Delay(ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS);
         return ARM_CONTROLLER_OK;
     }
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -1303,8 +1612,8 @@ arm_controller_result_t arm_controller_return_to_tray_direction(
     {
         return ARM_CONTROLLER_NOT_READY;
     }
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -1332,7 +1641,7 @@ arm_controller_result_t arm_controller_place_to_stack(
     }
 
     /* 1. 上升到最高点 0 度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -1341,9 +1650,9 @@ arm_controller_result_t arm_controller_place_to_stack(
         return result;
     }
 
-    /* 2. Z 轴机械逆时针旋转 180 度，转到物料盘方向。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    /* 2. Z 轴舵机转到物料盘方向。 */
+    result = arm_controller_move_z_angle(
+        controller,
         ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -1351,15 +1660,15 @@ arm_controller_result_t arm_controller_place_to_stack(
         return result;
     }
 
-    /* 下降取料前先打开夹爪，避免夹爪碰到物料盘。 */
-    gripper_result = gripper_servo_open(&controller->gripper);
-    if (gripper_result != GRIPPER_SERVO_OK)
+    /* 下降取料前只打开 20 度，避免夹爪碰到物料盘上的其他物料。 */
+    result = arm_controller_open_tray_gripper(controller);
+    if (result != ARM_CONTROLLER_OK)
     {
-        return arm_controller_from_gripper_result(gripper_result);
+        return result;
     }
 
     /* 3. 下降到物料盘取料高度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -1377,7 +1686,7 @@ arm_controller_result_t arm_controller_place_to_stack(
     HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
     /* 5. 夹紧物料并保持 200 ms 后，上升到最高点 0 度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);
@@ -1386,9 +1695,9 @@ arm_controller_result_t arm_controller_place_to_stack(
         return result;
     }
 
-    /* 6. Z 轴机械顺时针旋转 180 度，转回地面方向。 */
-    result = arm_controller_move_motor_angle(
-        &controller->z_motor,
+    /* 6. Z 轴舵机转回地面方向。 */
+    result = arm_controller_move_z_angle(
+        controller,
         -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
     if (result != ARM_CONTROLLER_OK)
@@ -1397,7 +1706,7 @@ arm_controller_result_t arm_controller_place_to_stack(
     }
 
     /* 7. 下降到与码垛准备相同的高度。 */
-    result = arm_controller_move_motor_angle(
+    result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
         MOTOR_POSITION_ABSOLUTE);
@@ -1414,7 +1723,7 @@ arm_controller_result_t arm_controller_place_to_stack(
     }
 
     /* 9. 返回最高点 0 度。 */
-    return arm_controller_move_motor_angle(
+    return arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
         MOTOR_POSITION_ABSOLUTE);

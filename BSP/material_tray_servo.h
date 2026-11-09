@@ -10,12 +10,12 @@
 #include <stdint.h>
 
 #define MATERIAL_TRAY_POSITION_COUNT          3U
-#define MATERIAL_TRAY_SERVO_MAX_ANGLE_DEG      270U
+#define MATERIAL_TRAY_SERVO_MAX_ANGLE_DEG      180U
 #define MATERIAL_TRAY_SERVO_MIN_PULSE_US       400U
 #define MATERIAL_TRAY_SERVO_MAX_PULSE_US       2500U
-#define MATERIAL_TRAY_DEFAULT_POSITION_1_DEG  8U
-#define MATERIAL_TRAY_DEFAULT_POSITION_2_DEG  95U
-#define MATERIAL_TRAY_DEFAULT_POSITION_3_DEG  180U
+#define MATERIAL_TRAY_DEFAULT_POSITION_1_DEG  12U
+#define MATERIAL_TRAY_DEFAULT_POSITION_2_DEG  57U
+#define MATERIAL_TRAY_DEFAULT_POSITION_3_DEG  101U
 
 typedef enum
 {
@@ -51,7 +51,7 @@ typedef struct
     uint8_t initialized;
 } material_tray_servo_t;
 
-/** 生成 270 度舵机默认配置：1号位 8 度，2号位 95 度，3号位 180 度。 */
+/** 生成 180 度舵机默认配置：1号位 12 度，2号位 57 度，3号位 101 度。 */
 void material_tray_servo_config_default(
     material_tray_servo_config_t *config);
 

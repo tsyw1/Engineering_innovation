@@ -3,34 +3,30 @@
 //
 
 #include "chassis_mecanum.h"
-#include "MECANUM_INERTIAL_NAV.h"
 
 #include <math.h>
 #include <string.h>
 
 #define MECANUM_PI_F 3.14159265358979323846f
+#define MECANUM_MOTOR_INIT_ATTEMPTS 10U
+#define MECANUM_MOTOR_INIT_RETRY_DELAY_MS 100U
+/* X42S/Y42 多机总线连续命令之间需要保留几毫秒处理时间。 */
+#define MECANUM_CAN_COMMAND_GAP_MS 2U
+#define MECANUM_SPEED_COMMAND_ATTEMPTS 3U
+#define MECANUM_SPEED_COMMAND_RETRY_DELAY_MS 2U
 /* Emm 位置命令拆成多帧 CAN 数据，多台电机连续发送时留出间隔。 */
-#define MECANUM_POSITION_COMMAND_GAP_MS 2U
+#define MECANUM_POSITION_COMMAND_GAP_MS MECANUM_CAN_COMMAND_GAP_MS
 /* 位置模式限制为约60 RPM，匹配任务层的路线速度。 */
 #define MECANUM_POSITION_MAX_SPEED_MPS 0.246f
-#define MECANUM_INERTIAL_MOVE_MAX_SPEED_MPS 0.25f
-#define MECANUM_INERTIAL_MOVE_MAX_WZ_RAD_S  0.35f
-#define MECANUM_INERTIAL_MOVE_KP_POSITION   1.20f
-#define MECANUM_INERTIAL_MOVE_KP_YAW        1.50f
-#define MECANUM_INERTIAL_MOVE_TOLERANCE_M   0.008f
-#define MECANUM_INERTIAL_MOVE_YAW_TOLERANCE 0.025f
-#define MECANUM_INERTIAL_MOVE_TIMEOUT_MS    30000U
 
 static float mecanum_abs_f(float value)
 {
     return (value < 0.0f) ? -value : value;
 }
-
-static float mecanum_odometry_scale(float value)
+static float mecanum_velocity_scale(float value)
 {
     return (value > 0.0f) ? value : 1.0f;
 }
-
 static int16_t mecanum_round_rpm(float value)
 {
     if (value >= 0.0f)
@@ -70,9 +66,9 @@ static bool mecanum_config_valid(const mecanum_config_t *config)
 
     if ((config == NULL) || (config->wheel_radius_m <= 0.0f) ||
         (config->half_length_m < 0.0f) || (config->half_width_m < 0.0f) ||
-        (config->odometry_x_scale < 0.0f) ||
-        (config->odometry_y_scale < 0.0f) ||
-        (config->odometry_yaw_scale < 0.0f) ||
+        (config->velocity_x_scale < 0.0f) ||
+        (config->velocity_y_scale < 0.0f) ||
+        (config->velocity_yaw_scale < 0.0f) ||
         (config->pulses_per_rev == 0U) || (config->max_wheel_rpm == 0U) ||
         (config->max_wheel_rpm > MOTOR_EMM_MAX_SPEED_RPM))
     {
@@ -109,6 +105,7 @@ static mecanum_result_t mecanum_send_wheel_rpm(
 {
     int16_t motor_rpm[MECANUM_WHEEL_COUNT];
     uint8_t index;
+    uint8_t attempt;
     motor_result_t result;
 
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
@@ -121,13 +118,37 @@ static mecanum_result_t mecanum_send_wheel_rpm(
        导致单个车轮没有收到速度指令。 */
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        result = motor_set_speed(chassis->config.motor[index],
-                                 motor_rpm[index],
-                                 chassis->config.acceleration,
-                                 MOTOR_EXECUTE_NOW);
+        result = MOTOR_ERROR;
+        for (attempt = 0U;
+             attempt < MECANUM_SPEED_COMMAND_ATTEMPTS;
+             attempt++)
+        {
+            result = motor_set_speed(chassis->config.motor[index],
+                                     motor_rpm[index],
+                                     chassis->config.acceleration,
+                                     MOTOR_EXECUTE_NOW);
+            if (result == MOTOR_OK)
+            {
+                break;
+            }
+
+            chassis->last_speed_command_motor_id =
+                chassis->config.motor[index]->id;
+            chassis->last_speed_command_result = result;
+            if ((attempt + 1U) < MECANUM_SPEED_COMMAND_ATTEMPTS)
+            {
+                chassis->speed_command_retry_count++;
+                HAL_Delay(MECANUM_SPEED_COMMAND_RETRY_DELAY_MS);
+            }
+        }
         if (result != MOTOR_OK)
         {
+            chassis->speed_command_error_count++;
             return MECANUM_MOTOR_ERROR;
+        }
+        if (index < (MECANUM_WHEEL_COUNT - 1U))
+        {
+            HAL_Delay(MECANUM_CAN_COMMAND_GAP_MS);
         }
     }
 
@@ -138,7 +159,6 @@ static mecanum_result_t mecanum_send_wheel_rpm(
 
     return MECANUM_OK;
 }
-
 mecanum_result_t mecanum_chassis_init(mecanum_chassis_t *chassis,
                                       const mecanum_config_t *config)
 {
@@ -149,10 +169,8 @@ mecanum_result_t mecanum_chassis_init(mecanum_chassis_t *chassis,
 
     memset(chassis, 0, sizeof(*chassis));
     memcpy(&chassis->config, config, sizeof(chassis->config));
-    mecanum_chassis_reset_odometry(chassis);
     return MECANUM_OK;
 }
-
 mecanum_result_t mecanum_chassis_init_default(
     mecanum_chassis_t *chassis,
     motor_bus_t *bus,
@@ -160,6 +178,7 @@ mecanum_result_t mecanum_chassis_init_default(
 {
     mecanum_config_t config;
     motor_result_t motor_result;
+    uint8_t initial_motor_count;
     uint8_t index;
     uint8_t attempt;
     const uint8_t motor_ids[MECANUM_WHEEL_COUNT] =
@@ -177,20 +196,32 @@ mecanum_result_t mecanum_chassis_init_default(
         return MECANUM_INVALID_PARAM;
     }
 
+    initial_motor_count = bus->motor_count;
+
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
         motor_result = MOTOR_ERROR;
-        for (attempt = 0U; attempt < 3U; attempt++)
+        for (attempt = 0U; attempt < MECANUM_MOTOR_INIT_ATTEMPTS; attempt++)
         {
             motor_result = motor_init(&motors[index], bus, motor_ids[index]);
             if (motor_result == MOTOR_OK)
             {
                 break;
             }
-            HAL_Delay(20U);
+            HAL_Delay(MECANUM_MOTOR_INIT_RETRY_DELAY_MS);
         }
         if (motor_result != MOTOR_OK)
         {
+            /* 某一路失败时回滚本次已经注册的底盘电机，允许上层重试。 */
+            for (index = initial_motor_count;
+                 index < bus->motor_count;
+                 index++)
+            {
+                bus->motors[index] = NULL;
+            }
+            bus->motor_count = initial_motor_count;
+            memset(motors, 0,
+                   sizeof(motor_t) * MECANUM_WHEEL_COUNT);
             return MECANUM_MOTOR_ERROR;
         }
     }
@@ -204,9 +235,9 @@ mecanum_result_t mecanum_chassis_init_default(
     config.wheel_radius_m = MECANUM_DEFAULT_WHEEL_RADIUS_M;
     config.half_length_m = MECANUM_DEFAULT_HALF_LENGTH_M;
     config.half_width_m = MECANUM_DEFAULT_HALF_WIDTH_M;
-    config.odometry_x_scale = MECANUM_DEFAULT_ODOMETRY_X_SCALE;
-    config.odometry_y_scale = MECANUM_DEFAULT_ODOMETRY_Y_SCALE;
-    config.odometry_yaw_scale = MECANUM_DEFAULT_ODOMETRY_YAW_SCALE;
+    config.velocity_x_scale = MECANUM_DEFAULT_VELOCITY_X_SCALE;
+    config.velocity_y_scale = MECANUM_DEFAULT_VELOCITY_Y_SCALE;
+    config.velocity_yaw_scale = MECANUM_DEFAULT_VELOCITY_YAW_SCALE;
     config.pulses_per_rev = MECANUM_DEFAULT_ENCODER_COUNTS_PER_REV;
     config.max_wheel_rpm = MECANUM_DEFAULT_MAX_WHEEL_RPM;
     config.acceleration = MECANUM_DEFAULT_ACCELERATION;
@@ -236,7 +267,6 @@ mecanum_result_t mecanum_chassis_enable(mecanum_chassis_t *chassis,
 
     return MECANUM_OK;
 }
-
 mecanum_result_t mecanum_chassis_stop(mecanum_chassis_t *chassis)
 {
     uint8_t index;
@@ -309,129 +339,6 @@ mecanum_result_t mecanum_chassis_set_wheel_speed(
     return (scale < 1.0f) ? MECANUM_CLAMPED : MECANUM_OK;
 }
 
-static mecanum_result_t mecanum_chassis_move_inertial_increment(
-    mecanum_chassis_t *chassis,
-    const int32_t pulse[MECANUM_WHEEL_COUNT],
-    uint16_t speed_rpm)
-{
-    mecanum_inertial_nav_t *nav;
-    float pulse_distance_m;
-    float body_x_pulse;
-    float body_y_pulse;
-    float body_yaw_pulse;
-    float body_dx_m;
-    float body_dy_m;
-    float body_dyaw_rad;
-    float target_x_m;
-    float target_y_m;
-    float target_yaw_rad;
-    float max_speed_mps;
-    uint32_t start_tick;
-    mecanum_inertial_nav_result_t nav_result;
-
-    if ((chassis == NULL) || (pulse == NULL) ||
-        (chassis->inertial_nav == NULL) ||
-        (chassis->imu_sensor == NULL))
-    {
-        return MECANUM_INVALID_PARAM;
-    }
-
-    nav = (mecanum_inertial_nav_t *)chassis->inertial_nav;
-    pulse_distance_m = (2.0f * MECANUM_PI_F *
-                        chassis->config.wheel_radius_m) /
-                       (float)MECANUM_POSITION_PULSES_PER_REV;
-    body_x_pulse = ((float)pulse[MECANUM_WHEEL_FL] +
-                    (float)pulse[MECANUM_WHEEL_FR] +
-                    (float)pulse[MECANUM_WHEEL_RL] +
-                    (float)pulse[MECANUM_WHEEL_RR]) * 0.25f;
-    body_y_pulse = (-(float)pulse[MECANUM_WHEEL_FL] +
-                    (float)pulse[MECANUM_WHEEL_FR] +
-                    (float)pulse[MECANUM_WHEEL_RL] -
-                    (float)pulse[MECANUM_WHEEL_RR]) * 0.25f;
-    body_yaw_pulse = (-(float)pulse[MECANUM_WHEEL_FL] +
-                      (float)pulse[MECANUM_WHEEL_FR] -
-                      (float)pulse[MECANUM_WHEEL_RL] +
-                      (float)pulse[MECANUM_WHEEL_RR]) /
-                     (4.0f * (chassis->config.half_length_m +
-                              chassis->config.half_width_m));
-    body_dx_m = body_x_pulse * pulse_distance_m;
-    body_dy_m = body_y_pulse * pulse_distance_m;
-    body_dyaw_rad = body_yaw_pulse * pulse_distance_m;
-
-    start_tick = HAL_GetTick();
-    while (nav->ekf_initialized == 0U)
-    {
-        (void)mecanum_chassis_feedback_task(chassis);
-        (void)mecanum_inertial_nav_update(
-            nav,
-            chassis,
-            chassis->imu_sensor);
-        if ((uint32_t)(HAL_GetTick() - start_tick) >=
-            MECANUM_INERTIAL_MOVE_TIMEOUT_MS)
-        {
-            return MECANUM_NOT_READY;
-        }
-        HAL_Delay(10U);
-    }
-
-    target_x_m = nav->x_m + cosf(nav->yaw_rad) * body_dx_m -
-                 sinf(nav->yaw_rad) * body_dy_m;
-    target_y_m = nav->y_m + sinf(nav->yaw_rad) * body_dx_m +
-                 cosf(nav->yaw_rad) * body_dy_m;
-    target_yaw_rad = nav->yaw_rad + body_dyaw_rad;
-    max_speed_mps = ((float)speed_rpm / 60.0f) *
-                    2.0f * MECANUM_PI_F * chassis->config.wheel_radius_m;
-    if (max_speed_mps > MECANUM_INERTIAL_MOVE_MAX_SPEED_MPS)
-    {
-        max_speed_mps = MECANUM_INERTIAL_MOVE_MAX_SPEED_MPS;
-    }
-    if (max_speed_mps < 0.03f)
-    {
-        max_speed_mps = 0.03f;
-    }
-
-    nav_result = mecanum_inertial_nav_set_target(
-        nav,
-        target_x_m,
-        target_y_m,
-        target_yaw_rad,
-        max_speed_mps,
-        max_speed_mps,
-        MECANUM_INERTIAL_MOVE_MAX_WZ_RAD_S,
-        MECANUM_INERTIAL_MOVE_KP_POSITION,
-        MECANUM_INERTIAL_MOVE_KP_YAW,
-        MECANUM_INERTIAL_MOVE_TOLERANCE_M,
-        MECANUM_INERTIAL_MOVE_YAW_TOLERANCE);
-    if (nav_result != MECANUM_INERTIAL_NAV_OK)
-    {
-        return MECANUM_INVALID_PARAM;
-    }
-
-    start_tick = HAL_GetTick();
-    while (nav->target_active != 0U)
-    {
-        (void)mecanum_chassis_feedback_task(chassis);
-        (void)mecanum_inertial_nav_update(
-            nav,
-            chassis,
-            chassis->imu_sensor);
-        nav_result = mecanum_inertial_nav_control_step(nav, chassis);
-        if (nav_result == MECANUM_INERTIAL_NAV_TARGET_REACHED)
-        {
-            break;
-        }
-        if ((uint32_t)(HAL_GetTick() - start_tick) >=
-            MECANUM_INERTIAL_MOVE_TIMEOUT_MS)
-        {
-            mecanum_inertial_nav_cancel_target(nav, chassis);
-            return MECANUM_MOTOR_ERROR;
-        }
-        HAL_Delay(10U);
-    }
-    (void)mecanum_chassis_stop(chassis);
-    return MECANUM_OK;
-}
-
 mecanum_result_t mecanum_chassis_set_position_increment(
     mecanum_chassis_t *chassis,
     const int32_t pulse[MECANUM_WHEEL_COUNT],
@@ -483,26 +390,10 @@ mecanum_result_t mecanum_chassis_set_position_increment(
 
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        chassis->last_position_increment_pulse[index] = pulse[index];
         chassis->target_wheel_rpm[index] = 0;
     }
 
     return MECANUM_OK;
-}
-
-void mecanum_chassis_attach_inertial_nav(
-    mecanum_chassis_t *chassis,
-    struct mecanum_inertial_nav *nav,
-    jy901s_uart_t *imu_sensor)
-{
-    if (chassis == NULL)
-    {
-        return;
-    }
-    chassis->inertial_nav = nav;
-    chassis->imu_sensor = imu_sensor;
-    chassis->inertial_motion_enabled =
-        ((nav != NULL) && (imu_sensor != NULL)) ? 1U : 0U;
 }
 
 mecanum_result_t mecanum_chassis_set_velocity(mecanum_chassis_t *chassis,
@@ -584,11 +475,14 @@ mecanum_result_t mecanum_chassis_read_feedback(mecanum_chassis_t *chassis)
     {
         motor_t *motor = chassis->config.motor[index];
 
-        /* 使用调通版本的 Emm 0x36 多圈位置作为里程计输入。 */
-        if ((motor_read_speed(motor) != MOTOR_OK) ||
-            (motor_read_position(motor) != MOTOR_OK))
+        /* 编码器速度解算只需要电机实际转速反馈。 */
+        if (motor_read_speed(motor) != MOTOR_OK)
         {
             return MECANUM_MOTOR_ERROR;
+        }
+        if (index < (MECANUM_WHEEL_COUNT - 1U))
+        {
+            HAL_Delay(MECANUM_CAN_COMMAND_GAP_MS);
         }
     }
 
@@ -615,23 +509,20 @@ mecanum_result_t mecanum_chassis_feedback_task(mecanum_chassis_t *chassis)
     return mecanum_chassis_read_feedback(chassis);
 }
 
-mecanum_result_t mecanum_chassis_update_encoder_odometry(
+mecanum_result_t mecanum_chassis_update_encoder_velocity(
     mecanum_chassis_t *chassis)
 {
-    float wheel_distance[MECANUM_WHEEL_COUNT];
-    int64_t current_position_pulse[MECANUM_WHEEL_COUNT];
-    uint32_t current_update_ms[MECANUM_WHEEL_COUNT];
-    uint32_t current_update_count[MECANUM_WHEEL_COUNT];
+    int16_t wheel_rpm[MECANUM_WHEEL_COUNT];
+    uint32_t speed_update_ms[MECANUM_WHEEL_COUNT];
+    float wheel_speed_mps[MECANUM_WHEEL_COUNT];
     float geometry_factor;
-    float dx;
-    float dy;
-    float dyaw;
-    float dt_s;
-    uint32_t now;
-    uint8_t position_changed;
-    uint8_t all_position_updated;
-    uint8_t all_position_valid;
+    float wheel_speed_scale;
+    float vx_mps;
+    float vy_mps;
+    float wz_rad_s;
     uint32_t primask;
+    uint32_t now;
+    uint8_t all_speed_valid;
     uint8_t index;
 
     if ((chassis == NULL) || !mecanum_config_valid(&chassis->config))
@@ -639,37 +530,22 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
         return MECANUM_INVALID_PARAM;
     }
 
-    position_changed = 0U;
-    all_position_updated = 1U;
-    all_position_valid = 1U;
+    now = HAL_GetTick();
+
+    /* CAN 接收中断可能同时更新实际转速，先一次性复制四路快照。 */
+    all_speed_valid = 1U;
     primask = __get_PRIMASK();
     __disable_irq();
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        motor_t *motor = chassis->config.motor[index];
+        const motor_t *motor = chassis->config.motor[index];
 
-        /* 0x36 返回多圈实际位置，不需要单圈回绕处理。 */
-        if (motor->position_valid == 0U)
+        wheel_rpm[index] = (int16_t)((int32_t)motor->actual_speed_rpm *
+                                     chassis->config.direction_sign[index]);
+        speed_update_ms[index] = motor->speed_update_ms;
+        if (speed_update_ms[index] == 0U)
         {
-            all_position_valid = 0U;
-            continue;
-        }
-
-        current_position_pulse[index] = motor->actual_position_pulse;
-        current_update_ms[index] = motor->position_update_ms;
-        current_update_count[index] = motor->position_update_count;
-        chassis->actual_wheel_rpm[index] = (int16_t)(
-            (int32_t)motor->actual_speed_rpm *
-            chassis->config.direction_sign[index]);
-        if ((chassis->odom_initialized != 0U) &&
-            (current_update_count[index] !=
-             chassis->last_encoder_update_count[index]))
-        {
-            position_changed = 1U;
-        }
-        else
-        {
-            all_position_updated = 0U;
+            all_speed_valid = 0U;
         }
     }
     if (primask == 0U)
@@ -677,52 +553,36 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
         __enable_irq();
     }
 
-    if (all_position_valid == 0U)
-    {
-        return MECANUM_NOT_READY;
-    }
-
-    if ((chassis->odom_initialized != 0U) &&
-        ((position_changed == 0U) || (all_position_updated == 0U)))
-    {
-        return MECANUM_NOT_READY;
-    }
-
-    now = HAL_GetTick();
-    /* 基准只需建立一次；不能用 encoder_odometry.valid 判断，
-       因为 valid 要在完成第一次增量积分后才会置位。 */
-    if (chassis->odom_initialized == 0U)
-    {
-        for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
-        {
-            chassis->last_position_pulse[index] = current_position_pulse[index];
-            chassis->last_encoder_update_ms[index] = current_update_ms[index];
-            chassis->last_encoder_update_count[index] =
-                current_update_count[index];
-        }
-        chassis->encoder_odometry.update_tick = now;
-        chassis->odom_initialized = 1U;
-        return MECANUM_NOT_READY;
-    }
-
-    dt_s = (float)(now - chassis->encoder_odometry.update_tick) * 0.001f;
-    if (dt_s <= 0.0f)
+    if (all_speed_valid == 0U)
     {
         return MECANUM_NOT_READY;
     }
 
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        int64_t position_delta = current_position_pulse[index] -
-                                 chassis->last_position_pulse[index];
-
-        wheel_distance[index] = (float)position_delta *
-                                (2.0f * MECANUM_PI_F *
-                                 chassis->config.wheel_radius_m) /
-                                (float)chassis->config.pulses_per_rev;
-        wheel_distance[index] *=
-            (float)chassis->config.direction_sign[index];
+        if ((uint32_t)(now - speed_update_ms[index]) >
+            MECANUM_MAX_ENCODER_SPEED_AGE_MS)
+        {
+            return MECANUM_NOT_READY;
+        }
     }
+
+    wheel_speed_scale = (2.0f * MECANUM_PI_F *
+                         chassis->config.wheel_radius_m) / 60.0f;
+    for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+    {
+        wheel_speed_mps[index] = (float)wheel_rpm[index] * wheel_speed_scale;
+    }
+
+    /* 与 mecanum_chassis_set_velocity() 使用的 X 型麦轮运动学互为逆运算。 */
+    vx_mps = (wheel_speed_mps[MECANUM_WHEEL_FL] +
+              wheel_speed_mps[MECANUM_WHEEL_FR] +
+              wheel_speed_mps[MECANUM_WHEEL_RL] +
+              wheel_speed_mps[MECANUM_WHEEL_RR]) * 0.25f;
+    vy_mps = (-wheel_speed_mps[MECANUM_WHEEL_FL] +
+              wheel_speed_mps[MECANUM_WHEEL_FR] +
+              wheel_speed_mps[MECANUM_WHEEL_RL] -
+              wheel_speed_mps[MECANUM_WHEEL_RR]) * 0.25f;
 
     geometry_factor = chassis->config.half_length_m +
                       chassis->config.half_width_m;
@@ -731,116 +591,62 @@ mecanum_result_t mecanum_chassis_update_encoder_odometry(
         return MECANUM_INVALID_PARAM;
     }
 
-    dx = (wheel_distance[MECANUM_WHEEL_FL] +
-          wheel_distance[MECANUM_WHEEL_FR] +
-          wheel_distance[MECANUM_WHEEL_RL] +
-          wheel_distance[MECANUM_WHEEL_RR]) * 0.25f;
-    dy = (-wheel_distance[MECANUM_WHEEL_FL] +
-          wheel_distance[MECANUM_WHEEL_FR] +
-          wheel_distance[MECANUM_WHEEL_RL] -
-          wheel_distance[MECANUM_WHEEL_RR]) * 0.25f;
-    dyaw = (-wheel_distance[MECANUM_WHEEL_FL] +
-            wheel_distance[MECANUM_WHEEL_FR] -
-            wheel_distance[MECANUM_WHEEL_RL] +
-            wheel_distance[MECANUM_WHEEL_RR]) /
-           (4.0f * geometry_factor);
+    wz_rad_s = (-wheel_speed_mps[MECANUM_WHEEL_FL] +
+                wheel_speed_mps[MECANUM_WHEEL_FR] -
+                wheel_speed_mps[MECANUM_WHEEL_RL] +
+                wheel_speed_mps[MECANUM_WHEEL_RR]) /
+               (4.0f * geometry_factor);
 
-    /* 标定比例只修正里程计输出，不参与速度控制。 */
-    dx *= mecanum_odometry_scale(chassis->config.odometry_x_scale);
-    dy *= mecanum_odometry_scale(chassis->config.odometry_y_scale);
-    dyaw *= mecanum_odometry_scale(chassis->config.odometry_yaw_scale);
+    /* 这些比例只修正编码器测量输出，不改变速度控制的轮速换算。 */
+    vx_mps *= mecanum_velocity_scale(chassis->config.velocity_x_scale);
+    vy_mps *= mecanum_velocity_scale(chassis->config.velocity_y_scale);
+    wz_rad_s *= mecanum_velocity_scale(chassis->config.velocity_yaw_scale);
 
-    /* 使用编码器自身的航向角作为积分基准，避免外部 IMU 覆盖原始结果。 */
-    {
-        float mid_yaw = chassis->encoder_odometry.yaw_rad + 0.5f * dyaw;
-        float cos_yaw = cosf(mid_yaw);
-        float sin_yaw = sinf(mid_yaw);
-
-        chassis->encoder_odometry.x_m += dx * cos_yaw - dy * sin_yaw;
-        chassis->encoder_odometry.y_m += dx * sin_yaw + dy * cos_yaw;
-    }
-
-    chassis->encoder_odometry.yaw_rad += dyaw;
-    chassis->odom_x_m = chassis->encoder_odometry.x_m;
-    chassis->odom_y_m = chassis->encoder_odometry.y_m;
-    chassis->odom_yaw_rad = chassis->encoder_odometry.yaw_rad;
-    chassis->last_delta_x_m = dx;
-    chassis->last_delta_y_m = dy;
-    chassis->last_delta_yaw_rad = dyaw;
-    chassis->encoder_odometry.delta_x_m = dx;
-    chassis->encoder_odometry.delta_y_m = dy;
-    chassis->encoder_odometry.delta_yaw_rad = dyaw;
-    chassis->encoder_odometry.vx_mps = dx / dt_s;
-    chassis->encoder_odometry.vy_mps = dy / dt_s;
-    chassis->encoder_odometry.wz_rad_s = dyaw / dt_s;
-    chassis->encoder_odometry.update_tick = now;
-    chassis->encoder_odometry.valid = 1U;
-
+    primask = __get_PRIMASK();
+    __disable_irq();
     for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
     {
-        chassis->last_position_pulse[index] = current_position_pulse[index];
-        chassis->last_encoder_update_ms[index] = current_update_ms[index];
-        chassis->last_encoder_update_count[index] = current_update_count[index];
+        chassis->encoder_velocity.wheel_rpm[index] = wheel_rpm[index];
+        chassis->encoder_velocity.wheel_speed_mps[index] =
+            wheel_speed_mps[index];
+    }
+    chassis->encoder_velocity.vx_mps = vx_mps;
+    chassis->encoder_velocity.vy_mps = vy_mps;
+    chassis->encoder_velocity.wz_rad_s = wz_rad_s;
+    chassis->encoder_velocity.update_tick = now;
+    chassis->encoder_velocity.valid = 1U;
+    if (primask == 0U)
+    {
+        __enable_irq();
     }
 
     return MECANUM_OK;
 }
 
-mecanum_result_t mecanum_chassis_update_odometry(mecanum_chassis_t *chassis)
-{
-    return mecanum_chassis_update_encoder_odometry(chassis);
-}
-
-void mecanum_chassis_reset_odometry(mecanum_chassis_t *chassis)
-{
-    uint8_t index;
-
-    if (chassis == NULL)
-    {
-        return;
-    }
-
-    chassis->odom_x_m = 0.0f;
-    chassis->odom_y_m = 0.0f;
-    chassis->odom_yaw_rad = 0.0f;
-    chassis->last_delta_x_m = 0.0f;
-    chassis->last_delta_y_m = 0.0f;
-    chassis->last_delta_yaw_rad = 0.0f;
-    chassis->odom_initialized = 0U;
-    memset(&chassis->encoder_odometry, 0,
-           sizeof(chassis->encoder_odometry));
-
-    for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
-    {
-        chassis->last_encoder_raw[index] = 0U;
-        chassis->last_position_pulse[index] = 0;
-        chassis->last_position_increment_pulse[index] = 0;
-        chassis->last_encoder_update_ms[index] = 0U;
-        chassis->last_encoder_update_count[index] = 0U;
-    }
-}
-
-mecanum_result_t mecanum_chassis_get_encoder_odometry(
+mecanum_result_t mecanum_chassis_get_encoder_velocity(
     const mecanum_chassis_t *chassis,
-    mecanum_encoder_odometry_t *odometry)
+    mecanum_encoder_velocity_t *velocity)
 {
-    if ((chassis == NULL) || (odometry == NULL))
+    uint32_t primask;
+
+    if ((chassis == NULL) || (velocity == NULL))
     {
         return MECANUM_INVALID_PARAM;
     }
-    if (chassis->encoder_odometry.valid == 0U)
+    if (chassis->encoder_velocity.valid == 0U)
     {
         return MECANUM_NOT_READY;
     }
 
-    *odometry = chassis->encoder_odometry;
-    return MECANUM_OK;
-}
-
-void mecanum_chassis_set_yaw(mecanum_chassis_t *chassis, float yaw_rad)
-{
-    if (chassis != NULL)
+    primask = __get_PRIMASK();
+    __disable_irq();
+    memcpy(velocity,
+           (const void *)&chassis->encoder_velocity,
+           sizeof(*velocity));
+    if (primask == 0U)
     {
-        chassis->odom_yaw_rad = yaw_rad;
+        __enable_irq();
     }
+
+    return MECANUM_OK;
 }

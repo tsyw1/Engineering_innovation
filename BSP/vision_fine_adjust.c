@@ -2,11 +2,6 @@
 
 #include <string.h>
 
-static float vision_fine_abs(float value)
-{
-    return (value < 0.0f) ? -value : value;
-}
-
 static void vision_fine_stop(vision_fine_adjust_t *adjust)
 {
     if ((adjust != NULL) && (adjust->chassis != NULL) &&
@@ -15,6 +10,12 @@ static void vision_fine_stop(vision_fine_adjust_t *adjust)
         (void)mecanum_chassis_stop(adjust->chassis);
         adjust->command_active = 0U;
     }
+}
+
+#if !VISION_FINE_ADJUST_BYPASS
+static float vision_fine_abs(float value)
+{
+    return (value < 0.0f) ? -value : value;
 }
 
 static vision_fine_adjust_result_t vision_fine_hold_or_wait(
@@ -112,6 +113,7 @@ static void vision_fine_limit_pulses(
         }
     }
 }
+#endif
 
 void vision_fine_adjust_config_default(vision_fine_adjust_config_t *config)
 {
@@ -195,6 +197,18 @@ static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
     vision_fine_stop(adjust);
+#if VISION_FINE_ADJUST_BYPASS
+    /* 联调旁路：保持接口和状态机语义，但不依赖视觉模块。 */
+    (void)mode_preselected;
+    adjust->vision->current_mode = mode;
+    adjust->mode = mode;
+    adjust->target_id = target_id;
+    adjust->start_tick = HAL_GetTick();
+    adjust->last_command_tick = adjust->start_tick;
+    adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
+    adjust->state = VISION_FINE_ADJUST_ALIGNED;
+    return VISION_FINE_ADJUST_OK;
+#else
     if (mode_preselected != 0U)
     {
         if (adjust->vision->current_mode != mode)
@@ -218,6 +232,7 @@ static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
     adjust->state = VISION_FINE_ADJUST_WAITING_FRAME;
     return VISION_FINE_ADJUST_OK;
+#endif
 }
 
 vision_fine_adjust_result_t vision_fine_adjust_start(
@@ -238,9 +253,14 @@ vision_fine_adjust_result_t vision_fine_adjust_preselect_mode(
     {
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
+#if VISION_FINE_ADJUST_BYPASS
+    adjust->vision->current_mode = mode;
+    return VISION_FINE_ADJUST_OK;
+#else
     return (vision_uart_set_mode(adjust->vision, mode) ==
             VISION_UART_RESULT_OK) ?
            VISION_FINE_ADJUST_OK : VISION_FINE_ADJUST_UART_ERROR;
+#endif
 }
 
 vision_fine_adjust_result_t vision_fine_adjust_start_preselected(
@@ -254,6 +274,7 @@ vision_fine_adjust_result_t vision_fine_adjust_start_preselected(
 vision_fine_adjust_result_t vision_fine_adjust_step(
     vision_fine_adjust_t *adjust)
 {
+#if !VISION_FINE_ADJUST_BYPASS
     vision_uart_frame_t frame;
     vision_detection_t detection;
     int32_t body_x_pulse;
@@ -263,12 +284,17 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     vision_uart_result_t frame_result;
     mecanum_result_t chassis_result;
     uint8_t target_found;
+#endif
 
     if ((adjust == NULL) || (adjust->vision == NULL) ||
         (adjust->chassis == NULL))
     {
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
+#if VISION_FINE_ADJUST_BYPASS
+    adjust->state = VISION_FINE_ADJUST_ALIGNED;
+    return VISION_FINE_ADJUST_REACHED;
+#else
     if (adjust->state == VISION_FINE_ADJUST_ALIGNED)
     {
         return VISION_FINE_ADJUST_REACHED;
@@ -381,6 +407,7 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
     adjust->state = VISION_FINE_ADJUST_RUNNING;
     return VISION_FINE_ADJUST_OK;
+#endif
 }
 
 vision_fine_adjust_result_t vision_fine_adjust_prepare_pick_and_start(
@@ -449,6 +476,11 @@ vision_fine_adjust_result_t vision_fine_adjust_prepare_place_and_start(
     {
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
+    if (arm_controller_set_target_ring(arm, target_ring) !=
+        ARM_CONTROLLER_OK)
+    {
+        return VISION_FINE_ADJUST_ARM_ERROR;
+    }
     if (arm_controller_prepare_ground_place(arm) != ARM_CONTROLLER_OK)
     {
         return VISION_FINE_ADJUST_ARM_ERROR;
@@ -467,6 +499,11 @@ vision_fine_adjust_prepare_place_and_start_preselected(
     if (arm == NULL)
     {
         return VISION_FINE_ADJUST_INVALID_PARAM;
+    }
+    if (arm_controller_set_target_ring(arm, target_ring) !=
+        ARM_CONTROLLER_OK)
+    {
+        return VISION_FINE_ADJUST_ARM_ERROR;
     }
     if (arm_controller_prepare_ground_place(arm) != ARM_CONTROLLER_OK)
     {

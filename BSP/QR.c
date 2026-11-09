@@ -1,7 +1,8 @@
 #include "QR.h"
-#include "IMU_UART.h"
-#include "material_tray_uart_control.h"
+#include "HWT101CT.h"
 #include "motor_TTL.h"
+#include "servo_uart_test.h"
+#include "heading_hold_test.h"
 #include "vision_uart.h"
 #include "screen.h"
 #include "usart.h"
@@ -354,14 +355,15 @@ void QR_GetDiagnostics(QR_Diagnostics_t *diagnostics)
     }
 }
 
-/* UART4 接收二维码，USART3 接收视觉 JSON，UART5 接收屏幕启动命令。 */
+/* 工程统一 HAL 回调，各模块只处理自己已经初始化的串口。 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     vision_uart_t *vision;
 
-    jy901s_uart_on_rx_complete(huart);
+    hwt101ct_on_rx_complete(huart);
     motor_ttl_on_rx_complete(huart);
-    material_tray_uart_control_on_rx_complete(huart);
+    servo_uart_test_on_rx_complete(huart);
+    heading_hold_test_on_rx_complete(huart);
     screen_on_rx_complete(huart);
 
     if (huart == &huart4)
@@ -388,9 +390,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-    jy901s_uart_on_error(huart);
+    hwt101ct_on_error(huart);
     motor_ttl_on_error(huart);
-    material_tray_uart_control_on_error(huart);
+    servo_uart_test_on_error(huart);
+    heading_hold_test_on_error(huart);
     screen_on_error(huart);
 
     if (huart == &huart4)

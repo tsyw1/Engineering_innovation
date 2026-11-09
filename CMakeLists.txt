@@ -39,20 +39,31 @@ add_executable(${CMAKE_PROJECT_NAME}
         BSP/motor_TTL.h
         BSP/chassis_mecanum.c
         BSP/chassis_mecanum.h
-        BSP/arm_z_axis.c
-        BSP/arm_z_axis.h
+        BSP/chassis_odometry_motion_config.h
+        BSP/chassis_velocity_test.c
+        BSP/chassis_velocity_test.h
+        BSP/square_odometry_test.c
+        BSP/square_odometry_test.h
+        BSP/heading_hold_test.c
+        BSP/heading_hold_test.h
+        BSP/arm_z_servo_axis.c
+        BSP/arm_z_servo_axis.h
         BSP/arm_lift_axis.c
         BSP/arm_lift_axis.h
+        BSP/arm_horizontal_axis.c
+        BSP/arm_horizontal_axis.h
         BSP/arm_controller.c
         BSP/arm_controller.h
         BSP/servo.c
         BSP/servo.h
+        BSP/joho_bus_servo.c
+        BSP/joho_bus_servo.h
+        BSP/servo_uart_test.c
+        BSP/servo_uart_test.h
         BSP/gripper_servo.c
         BSP/gripper_servo.h
         BSP/material_tray_servo.c
         BSP/material_tray_servo.h
-        BSP/material_tray_uart_control.c
-        BSP/material_tray_uart_control.h
         BSP/IMU_IIC.c
         BSP/IMU_IIC.h
         BSP/QR.c
@@ -85,15 +96,23 @@ add_executable(${CMAKE_PROJECT_NAME}
           APP/task10_return_home.h
           APP/target_ring_place_test.c
         APP/target_ring_place_test.h
+        APP/chassis_full_flow_test.c
+        APP/chassis_full_flow_test.h
+        APP/chassis_motion_closed_loop.c
+        APP/chassis_motion_closed_loop.h
         BSP/screen.c
         BSP/screen.h
         BSP/start_zone.h
-        BSP/IMU_UART.c
-        BSP/IMU_UART.h
-        Algorithm/IMU_GYRO_CALIBRATION.c
-        Algorithm/IMU_GYRO_CALIBRATION.h
-        Algorithm/MECANUM_INERTIAL_NAV.c
-        Algorithm/MECANUM_INERTIAL_NAV.h
+        BSP/HWT101CT.c
+        BSP/HWT101CT.h
+        Algorithm/JY901S_ACCEL_VELOCITY.c
+        Algorithm/JY901S_ACCEL_VELOCITY.h
+        Algorithm/VELOCITY_COMPLEMENTARY_FILTER.c
+        Algorithm/VELOCITY_COMPLEMENTARY_FILTER.h
+        Algorithm/VELOCITY_ODOMETRY.c
+        Algorithm/VELOCITY_ODOMETRY.h
+        Algorithm/HEADING_HOLD_CONTROLLER.c
+        Algorithm/HEADING_HOLD_CONTROLLER.h
 )
 
 # Add STM32CubeMX generated sources

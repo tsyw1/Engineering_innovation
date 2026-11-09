@@ -15,7 +15,7 @@ extern "C" {
 #endif
 
 #define TASK4_RING_RETURN_ITEM_COUNT 3U
-#define TASK4_RING_RETURN_SPACING_MM 150U
+#define TASK4_RING_RETURN_CENTER 2U
 #define TASK4_RING_RETURN_TRAY_SETTLE_MS 400U
 
 typedef void (*task4_ring_return_status_fn)(uint8_t status,

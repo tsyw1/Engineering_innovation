@@ -15,7 +15,7 @@ extern "C" {
 
 #define TASK1_START_QR_FORWARD_FIRST_MM 100U
 #define TASK1_START_QR_LEFT_MM         1050U
-#define TASK1_START_QR_RIGHT_MM        1150U
+#define TASK1_START_QR_RIGHT_MM        1050U
 #define TASK1_START_QR_FORWARD_QR_MM   150U
 
 typedef void (*task1_start_qr_status_fn)(uint8_t status,

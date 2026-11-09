@@ -12,6 +12,10 @@
 #define VISION_FINE_ADJUST_DEFAULT_TOLERANCE_X_PIXEL  4
 #define VISION_FINE_ADJUST_DEFAULT_TOLERANCE_Y_PIXEL  4
 
+/* 临时流程联调开关：1=跳过视觉模式发送、视觉帧等待和底盘细调，
+ * 保留机械臂准备及任务状态机；恢复视觉时改为 0。 */
+#define VISION_FINE_ADJUST_BYPASS                    1U
+
 typedef enum
 {
     VISION_FINE_ADJUST_IDLE = 0,

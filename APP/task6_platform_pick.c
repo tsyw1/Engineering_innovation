@@ -1,5 +1,7 @@
 #include "task6_platform_pick.h"
 
+#include "chassis_motion_closed_loop.h"
+
 #include <string.h>
 
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
@@ -127,80 +129,39 @@ static task6_platform_pick_result_t task6_move_linear(
     int8_t body_x_sign,
     int8_t body_y_sign)
 {
-    uint32_t pulses_per_mm;
-    int32_t body_x_pulse;
-    int32_t body_y_pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-
     if ((task == NULL) || (distance_mm == 0U) ||
         ((body_x_sign == 0) && (body_y_sign == 0)))
     {
         return TASK6_PLATFORM_PICK_INVALID_PARAM;
     }
-    pulses_per_mm = task6_pulses_per_mm(task->chassis);
-    if (pulses_per_mm == 0U)
-    {
-        return TASK6_PLATFORM_PICK_INVALID_PARAM;
-    }
-    body_x_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_x_sign;
-    body_y_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_y_sign;
-    wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RR] = body_x_pulse - body_y_pulse;
-
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_move_linear_mm(
             task->chassis,
-            wheel_pulse,
-            TASK6_MOVE_SPEED_RPM,
-            TASK6_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)distance_mm * body_x_sign,
+            (int16_t)distance_mm * body_y_sign) != CHASSIS_MOTION_OK)
     {
         return TASK6_PLATFORM_PICK_CHASSIS_ERROR;
     }
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task6_linear_duration_ms(task->chassis,
-                                                       distance_mm);
+    task->move_duration_ms = 0U;
     return TASK6_PLATFORM_PICK_OK;
 }
 
 static task6_platform_pick_result_t task6_rotate_clockwise_90(
     task6_platform_pick_t *task)
 {
-    uint32_t pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-
     if (task == NULL)
     {
         return TASK6_PLATFORM_PICK_INVALID_PARAM;
     }
-    pulse = task6_rotation_pulses(task->chassis,
-                                  TASK6_PLATFORM_PICK_ROTATE_DEG);
-    if (pulse == 0U)
-    {
-        return TASK6_PLATFORM_PICK_INVALID_PARAM;
-    }
-    wheel_pulse[MECANUM_WHEEL_FL] =
-        -(int32_t)pulse * TASK6_ROTATE_CLOCKWISE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_FR] =
-        (int32_t)pulse * TASK6_ROTATE_CLOCKWISE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_RL] =
-        -(int32_t)pulse * TASK6_ROTATE_CLOCKWISE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_RR] =
-        (int32_t)pulse * TASK6_ROTATE_CLOCKWISE_SIGN;
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_rotate_deg(
             task->chassis,
-            wheel_pulse,
-            TASK6_MOVE_SPEED_RPM,
-            TASK6_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)TASK6_PLATFORM_PICK_ROTATE_DEG *
+            TASK6_ROTATE_CLOCKWISE_SIGN) != CHASSIS_MOTION_OK)
     {
         return TASK6_PLATFORM_PICK_CHASSIS_ERROR;
     }
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task6_rotation_duration_ms(
-        task->chassis,
-        TASK6_PLATFORM_PICK_ROTATE_DEG);
+    task->move_duration_ms = 0U;
     return TASK6_PLATFORM_PICK_OK;
 }
 
@@ -236,18 +197,6 @@ static task6_platform_pick_result_t task6_set_tray_position(
     }
     HAL_Delay(TASK6_PLATFORM_PICK_TRAY_SETTLE_MS);
     return TASK6_PLATFORM_PICK_OK;
-}
-
-static uint8_t task6_last_staging_ring(const QR_TaskCode_t *qr_task)
-{
-    if (qr_task == NULL)
-    {
-        return 0U;
-    }
-
-    /* 任务5按第一批物料的放置顺序结束，直接取最后一件的暂存环位。 */
-    return qr_task->first_batch_position[
-        TASK6_PLATFORM_PICK_ITEM_COUNT - 1U];
 }
 
 task6_platform_pick_result_t task6_platform_pick_init(
@@ -317,11 +266,8 @@ task6_platform_pick_result_t task6_platform_pick_submit_qr(
             return TASK6_PLATFORM_PICK_INVALID_PARAM;
         }
     }
-    task->current_ring = task6_last_staging_ring(qr_task);
-    if ((task->current_ring < 1U) || (task->current_ring > 3U))
-    {
-        return TASK6_PLATFORM_PICK_INVALID_PARAM;
-    }
+    /* 任务5结束后底盘仍停在暂存区2号环。 */
+    task->current_ring = TASK6_PLATFORM_PICK_CENTER;
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
     task->task_ready = 1U;
@@ -430,27 +376,13 @@ task6_platform_pick_result_t task6_platform_pick_step(
             task6_status(task,
                          TASK6_PLATFORM_PICK_STATUS_PREPARE,
                          "task6_platform_prepare_pick_start");
-            if (task->item_index == 0U)
-            {
-                /* 第一次取料时机械臂已经朝向平台，不重复旋转Z轴。 */
-                if ((arm_controller_prepare_platform_pick_aligned(task->arm) !=
-                     ARM_CONTROLLER_OK) ||
-                    (vision_fine_adjust_start(
-                        task->fine_adjust,
-                        VISION_UART_MODE_MATERIAL,
-                        task->qr_task.second_batch_color[task->item_index]) !=
-                     VISION_FINE_ADJUST_OK))
-                {
-                    return task6_fail(task,
-                                      TASK6_PLATFORM_PICK_ARM_ERROR,
-                                      "task6_platform_prepare_pick_failed");
-                }
-            }
-            else if (vision_fine_adjust_prepare_platform_pick_and_start(
-                         task->fine_adjust,
-                         task->arm,
-                         task->qr_task.second_batch_color[task->item_index]) !=
-                     VISION_FINE_ADJUST_OK)
+            /* 任务 5 最后一件结束在暂存环方向；任务 6 首件必须重新
+             * 完成平台方向准备，不能跳过 Z 轴转向。 */
+            if (vision_fine_adjust_prepare_platform_pick_and_start(
+                    task->fine_adjust,
+                    task->arm,
+                    task->qr_task.second_batch_color[task->item_index]) !=
+                VISION_FINE_ADJUST_OK)
             {
                 /* 第二、第三次取料恢复顺时针180度旋转。 */
                 return task6_fail(task,

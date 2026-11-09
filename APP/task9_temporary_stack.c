@@ -1,5 +1,7 @@
 #include "task9_temporary_stack.h"
 
+#include "chassis_motion_closed_loop.h"
+
 #include <string.h>
 
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
@@ -126,80 +128,39 @@ static task9_temporary_stack_result_t task9_move_linear(
     int8_t body_x_sign,
     int8_t body_y_sign)
 {
-    uint32_t pulses_per_mm;
-    int32_t body_x_pulse;
-    int32_t body_y_pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-
     if ((task == NULL) || (distance_mm == 0U) ||
         ((body_x_sign == 0) && (body_y_sign == 0)))
     {
         return TASK9_TEMPORARY_STACK_INVALID_PARAM;
     }
-    pulses_per_mm = task9_pulses_per_mm(task->chassis);
-    if (pulses_per_mm == 0U)
-    {
-        return TASK9_TEMPORARY_STACK_INVALID_PARAM;
-    }
-    body_x_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_x_sign;
-    body_y_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_y_sign;
-    wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RR] = body_x_pulse - body_y_pulse;
-
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_move_linear_mm(
             task->chassis,
-            wheel_pulse,
-            TASK9_MOVE_SPEED_RPM,
-            TASK9_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)distance_mm * body_x_sign,
+            (int16_t)distance_mm * body_y_sign) != CHASSIS_MOTION_OK)
     {
         return TASK9_TEMPORARY_STACK_CHASSIS_ERROR;
     }
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task9_linear_duration_ms(task->chassis,
-                                                       distance_mm);
+    task->move_duration_ms = 0U;
     return TASK9_TEMPORARY_STACK_OK;
 }
 
 static task9_temporary_stack_result_t task9_rotate_clockwise_90(
     task9_temporary_stack_t *task)
 {
-    uint32_t pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-
     if (task == NULL)
     {
         return TASK9_TEMPORARY_STACK_INVALID_PARAM;
     }
-    pulse = task9_rotation_pulses(task->chassis,
-                                  TASK9_TEMPORARY_STACK_ROTATE_DEG);
-    if (pulse == 0U)
-    {
-        return TASK9_TEMPORARY_STACK_INVALID_PARAM;
-    }
-    wheel_pulse[MECANUM_WHEEL_FL] =
-        -(int32_t)pulse * TASK9_ROTATE_CLOCKWISE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_FR] =
-        (int32_t)pulse * TASK9_ROTATE_CLOCKWISE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_RL] =
-        -(int32_t)pulse * TASK9_ROTATE_CLOCKWISE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_RR] =
-        (int32_t)pulse * TASK9_ROTATE_CLOCKWISE_SIGN;
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_rotate_deg(
             task->chassis,
-            wheel_pulse,
-            TASK9_MOVE_SPEED_RPM,
-            TASK9_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)TASK9_TEMPORARY_STACK_ROTATE_DEG *
+            TASK9_ROTATE_CLOCKWISE_SIGN) != CHASSIS_MOTION_OK)
     {
         return TASK9_TEMPORARY_STACK_CHASSIS_ERROR;
     }
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task9_rotation_duration_ms(
-        task->chassis,
-        TASK9_TEMPORARY_STACK_ROTATE_DEG);
+    task->move_duration_ms = 0U;
     return TASK9_TEMPORARY_STACK_OK;
 }
 
@@ -218,41 +179,17 @@ static uint16_t task9_backward_distance_mm(uint8_t ring)
     }
 }
 
-static int16_t task9_ring_offset_mm(uint8_t ring)
-{
-    if (ring == 1U)
-    {
-        return (int16_t)TASK9_TEMPORARY_STACK_SPACING_MM;
-    }
-    if (ring == 3U)
-    {
-        return -(int16_t)TASK9_TEMPORARY_STACK_SPACING_MM;
-    }
-    return 0;
-}
-
-static task9_temporary_stack_result_t task9_move_to_ring(
+static task9_temporary_stack_result_t task9_select_target_ring(
     task9_temporary_stack_t *task)
 {
-    int16_t delta_mm;
-
     if ((task == NULL) || (task->target_ring < 1U) ||
-        (task->target_ring > 3U) || (task->current_ring < 1U) ||
-        (task->current_ring > 3U))
+        (task->target_ring > 3U))
     {
         return TASK9_TEMPORARY_STACK_INVALID_PARAM;
     }
-    delta_mm = task9_ring_offset_mm(task->target_ring) -
-               task9_ring_offset_mm(task->current_ring);
-    if (delta_mm == 0)
-    {
-        return TASK9_TEMPORARY_STACK_OK;
-    }
-    return task9_move_linear(task,
-                             (uint16_t)((delta_mm > 0) ?
-                                        delta_mm : -delta_mm),
-                             (delta_mm > 0) ? 1 : -1,
-                             0);
+    /* 底盘固定在暂存区2号环，目标环位交给机械臂水平轴处理。 */
+    task->current_ring = TASK9_TEMPORARY_STACK_CENTER;
+    return TASK9_TEMPORARY_STACK_OK;
 }
 
 static uint8_t task9_find_target(const task9_temporary_stack_t *task,
@@ -365,9 +302,8 @@ task9_temporary_stack_result_t task9_temporary_stack_submit_qr(
     }
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
-    /* 任务8结束在粗加工区，当前位置是第二批最后一个粗加工环位。 */
-    task->current_ring = qr_task->second_batch_position[
-        TASK9_TEMPORARY_STACK_ITEM_COUNT - 1U];
+    /* 任务8结束后底盘仍停在粗加工区2号环。 */
+    task->current_ring = TASK9_TEMPORARY_STACK_CENTER;
     task->task_ready = 1U;
     task->state = TASK9_TEMPORARY_STACK_BACKWARD_FROM_RING;
     task9_status(task,
@@ -469,17 +405,11 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
                                   TASK9_TEMPORARY_STACK_INVALID_PARAM,
                                   "task9_target_color_not_found");
             }
-            result = task9_move_to_ring(task);
+            result = task9_select_target_ring(task);
             if (result != TASK9_TEMPORARY_STACK_OK)
             {
                 return task9_fail(task, result,
-                                  "task9_move_to_target_ring_failed");
-            }
-            if (task->target_ring != task->current_ring)
-            {
-                task9_wait_motion_done(task);
-                (void)mecanum_chassis_stop(task->chassis);
-                task->current_ring = task->target_ring;
+                                  "task9_target_ring_invalid");
             }
             task9_status(task,
                          TASK9_TEMPORARY_STACK_STATUS_PREPARE,
@@ -511,19 +441,6 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             adjust_result = vision_fine_adjust_step(task->fine_adjust);
             if (adjust_result == VISION_FINE_ADJUST_REACHED)
             {
-                result = task9_move_linear(
-                    task,
-                    TASK9_TEMPORARY_STACK_POST_ALIGN_RIGHT_MM,
-                    0,
-                    -1);
-                if (result != TASK9_TEMPORARY_STACK_OK)
-                {
-                    return task9_fail(task,
-                                      result,
-                                      "task9_post_align_right_failed");
-                }
-                task9_wait_motion_done(task);
-                (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK9_TEMPORARY_STACK_PLACE_ITEM;
                 task9_status(task,
                              TASK9_TEMPORARY_STACK_STATUS_FINE_ADJUST,

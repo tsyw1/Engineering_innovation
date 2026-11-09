@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-// TIM1 已配置为 1 MHz 计数频率，比较值 1 对应 1 us。
+// 舵机所用定时器应配置为 1 MHz 计数频率，比较值 1 对应 1 us。
 #define SERVO_PERIOD_US             20000U
 #define SERVO_MIN_ANGLE_DEG         0U
 #define SERVO_MAX_ANGLE_DEG         180U

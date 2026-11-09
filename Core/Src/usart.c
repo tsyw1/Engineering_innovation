@@ -263,7 +263,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Alternate = GPIO_AF8_UART5;
     HAL_GPIO_Init(Screen_RX_GPIO_Port, &GPIO_InitStruct);
 
-    /* UART5 interrupt Init: 串口屏单字节启动命令。 */
+    /* UART5 interrupt Init */
     HAL_NVIC_SetPriority(UART5_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(UART5_IRQn);
   /* USER CODE BEGIN UART5_MspInit 1 */

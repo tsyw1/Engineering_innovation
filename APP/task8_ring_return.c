@@ -78,9 +78,8 @@ task8_ring_return_result_t task8_ring_return_submit_qr(
         return task8_from_task4_result(result);
     }
 
-    /* 任务7按 second_batch_position 放置，任务8从最后一个环位开始。 */
-    task->implementation.current_ring = qr_task->second_batch_position[
-        QR_BATCH_ITEM_COUNT - 1U];
+    /* 任务7结束后底盘仍停在2号环。 */
+    task->implementation.current_ring = TASK4_RING_RETURN_CENTER;
     task->state = TASK8_RING_RETURN_RUNNING;
     return TASK8_RING_RETURN_OK;
 }

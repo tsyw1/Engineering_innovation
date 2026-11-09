@@ -1,5 +1,7 @@
 #include "task7_coarse_ring.h"
 
+#include "chassis_motion_closed_loop.h"
+
 #include <string.h>
 
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
@@ -126,114 +128,51 @@ static task7_coarse_ring_result_t task7_move_linear(
     int8_t body_x_sign,
     int8_t body_y_sign)
 {
-    uint32_t pulses_per_mm;
-    int32_t body_x_pulse;
-    int32_t body_y_pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-
     if ((task == NULL) || (distance_mm == 0U) ||
         ((body_x_sign == 0) && (body_y_sign == 0)))
     {
         return TASK7_COARSE_RING_INVALID_PARAM;
     }
-    pulses_per_mm = task7_pulses_per_mm(task->chassis);
-    if (pulses_per_mm == 0U)
-    {
-        return TASK7_COARSE_RING_INVALID_PARAM;
-    }
-    body_x_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_x_sign;
-    body_y_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_y_sign;
-    wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RR] = body_x_pulse - body_y_pulse;
-
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_move_linear_mm(
             task->chassis,
-            wheel_pulse,
-            TASK7_MOVE_SPEED_RPM,
-            TASK7_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)distance_mm * body_x_sign,
+            (int16_t)distance_mm * body_y_sign) != CHASSIS_MOTION_OK)
     {
         return TASK7_COARSE_RING_CHASSIS_ERROR;
     }
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task7_linear_duration_ms(task->chassis,
-                                                       distance_mm);
+    task->move_duration_ms = 0U;
     return TASK7_COARSE_RING_OK;
 }
 
 static task7_coarse_ring_result_t task7_rotate_180(task7_coarse_ring_t *task)
 {
-    uint32_t pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-
     if (task == NULL)
     {
         return TASK7_COARSE_RING_INVALID_PARAM;
     }
-    pulse = task7_rotation_pulses(task->chassis,
-                                  TASK7_COARSE_RING_ROTATE_DEG);
-    if (pulse == 0U)
-    {
-        return TASK7_COARSE_RING_INVALID_PARAM;
-    }
-    wheel_pulse[MECANUM_WHEEL_FL] = -(int32_t)pulse * TASK7_ROTATE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_FR] = (int32_t)pulse * TASK7_ROTATE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_RL] = -(int32_t)pulse * TASK7_ROTATE_SIGN;
-    wheel_pulse[MECANUM_WHEEL_RR] = (int32_t)pulse * TASK7_ROTATE_SIGN;
-    if (mecanum_chassis_set_position_increment(
-            task->chassis,
-            wheel_pulse,
-            TASK7_MOVE_SPEED_RPM,
-            TASK7_MOVE_ACCELERATION) != MECANUM_OK)
+    if (chassis_motion_rotate_deg(task->chassis,
+                                  (int16_t)TASK7_COARSE_RING_ROTATE_DEG *
+                                  TASK7_ROTATE_SIGN) != CHASSIS_MOTION_OK)
     {
         return TASK7_COARSE_RING_CHASSIS_ERROR;
     }
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task7_rotation_duration_ms(
-        task->chassis,
-        TASK7_COARSE_RING_ROTATE_DEG);
+    task->move_duration_ms = 0U;
     return TASK7_COARSE_RING_OK;
 }
 
-static int16_t task7_ring_offset_mm(uint8_t ring)
-{
-    if (ring == 1U)
-    {
-        return (int16_t)TASK7_COARSE_RING_SPACING_MM;
-    }
-    if (ring == 3U)
-    {
-        return -(int16_t)TASK7_COARSE_RING_SPACING_MM;
-    }
-    return 0;
-}
-
-static task7_coarse_ring_result_t task7_move_to_ring(
+static task7_coarse_ring_result_t task7_select_target_ring(
     task7_coarse_ring_t *task)
 {
-    int16_t delta_mm;
-
     if ((task == NULL) || (task->target_ring < 1U) ||
-        (task->target_ring > 3U) || (task->current_ring < 1U) ||
-        (task->current_ring > 3U))
+        (task->target_ring > 3U))
     {
         return TASK7_COARSE_RING_INVALID_PARAM;
     }
-    delta_mm = task7_ring_offset_mm(task->target_ring) -
-               task7_ring_offset_mm(task->current_ring);
-    if (delta_mm == 0)
-    {
-        return TASK7_COARSE_RING_OK;
-    }
-    /* 180度转向后，靶环轴线对应车体前后方向。 */
-    return task7_move_linear(task,
-                             (uint16_t)((delta_mm > 0) ?
-                                        delta_mm : -delta_mm),
-                             (delta_mm > 0) ? 1 : -1,
-                             0);
+    /* 底盘固定在2号环，目标环位交给机械臂水平轴处理。 */
+    task->current_ring = TASK7_COARSE_RING_CENTER;
+    return TASK7_COARSE_RING_OK;
 }
 
 static task7_coarse_ring_result_t task7_set_tray_position(
@@ -387,7 +326,7 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
             if (result != TASK7_COARSE_RING_OK)
             {
                 return task7_fail(task, result,
-                                  "task7_right_1750mm_failed");
+                                  "task7_right_1670mm_failed");
             }
             task7_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
@@ -397,17 +336,11 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
         case TASK7_COARSE_RING_PREPARE_ITEM:
             task->target_ring = task->qr_task.second_batch_position[
                 task->item_index];
-            result = task7_move_to_ring(task);
+            result = task7_select_target_ring(task);
             if (result != TASK7_COARSE_RING_OK)
             {
                 return task7_fail(task, result,
-                                  "task7_move_to_ring_failed");
-            }
-            if (task->target_ring != task->current_ring)
-            {
-                task7_wait_motion_done(task);
-                (void)mecanum_chassis_stop(task->chassis);
-                task->current_ring = task->target_ring;
+                                  "task7_target_ring_invalid");
             }
             task7_status(task,
                          TASK7_COARSE_RING_STATUS_PREPARE,
@@ -513,7 +446,7 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
                              "task7_three_items_placed");
                 return TASK7_COARSE_RING_OK;
             }
-            /* 前两件保持低位、面向靶环、夹爪打开，移车后直接视觉对准。 */
+            /* 前两件保持低位、面向靶环、夹爪打开，底盘继续停在2号环。 */
             task->state = TASK7_COARSE_RING_PREPARE_ITEM;
             return TASK7_COARSE_RING_OK;
 

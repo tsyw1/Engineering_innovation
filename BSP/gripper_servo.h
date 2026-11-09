@@ -9,8 +9,8 @@
 
 #include <stdint.h>
 
-#define GRIPPER_SERVO_DEFAULT_OPEN_ANGLE_DEG    90U
-#define GRIPPER_SERVO_DEFAULT_CLOSED_ANGLE_DEG  2U
+#define GRIPPER_SERVO_DEFAULT_OPEN_ANGLE_DEG    95U
+#define GRIPPER_SERVO_DEFAULT_CLOSED_ANGLE_DEG  0U
 
 typedef enum
 {
@@ -43,7 +43,7 @@ typedef struct
     uint8_t initialized;
 } gripper_servo_t;
 
-/** 生成默认配置：90 度张开，2 度闭合。 */
+/** 生成默认配置：95 度张开，0 度闭合。 */
 void gripper_servo_config_default(gripper_servo_config_t *config);
 
 /** 初始化 TIM1_CH1 舵机，并在启动 PWM 后将夹爪复位到闭合状态。 */

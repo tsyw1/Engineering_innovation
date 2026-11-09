@@ -59,7 +59,6 @@ typedef struct
     screen_t *screen;
     target_ring_place_test_status_fn write_status;
     uint8_t item_index;
-    int16_t nominal_x_mm;
     target_ring_place_test_state_t state;
 } target_ring_place_test_t;
 

@@ -6,44 +6,67 @@
 #define ENGINEERING_INNOVATION_ARM_CONTROLLER_H
 
 #include "gripper_servo.h"
+#include "arm_horizontal_axis.h"
+#include "arm_z_servo_axis.h"
 #include "motor_can.h"
 
 #include <stdint.h>
 
-#define ARM_CONTROLLER_LIFT_MOTOR_ID             6U
-#define ARM_CONTROLLER_Z_MOTOR_ID                5U
+#define ARM_CONTROLLER_VERTICAL_MOTOR_ID         5U
+#define ARM_CONTROLLER_HORIZONTAL_MOTOR_ID       6U
+#define ARM_CONTROLLER_LIFT_MOTOR_ID             ARM_CONTROLLER_VERTICAL_MOTOR_ID
 #define ARM_CONTROLLER_COMMAND_PULSES_PER_REV   3200UL
 #define ARM_CONTROLLER_LIFT_SPEED_RPM           5000U
-#define ARM_CONTROLLER_Z_SPEED_RPM               5000U
 #define ARM_CONTROLLER_LIFT_ACCELERATION        200U
-#define ARM_CONTROLLER_Z_ACCELERATION             50U
-#define ARM_CONTROLLER_Z_HOLD_SPEED_RPM          120U
-#define ARM_CONTROLLER_Z_HOLD_ACCELERATION        20U
-#define ARM_CONTROLLER_Z_HOLD_PERIOD_MS          100U
+#define ARM_CONTROLLER_HORIZONTAL_SPEED_RPM      70U
+#define ARM_CONTROLLER_HORIZONTAL_ACCELERATION   50U
 #define ARM_CONTROLLER_RELEASE_DELAY_MS          500U
 #define ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS  100U
 #define ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS   100U
 #define ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS     100U
 #define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS      100U
 #define ARM_CONTROLLER_TRAY_GRIP_DELAY_MS        200U
+#define ARM_CONTROLLER_PLATFORM_ALIGN_SETTLE_MS  200U
+#define ARM_CONTROLLER_TRAY_ROTATION_SETTLE_MS  100U
+#define ARM_CONTROLLER_TRAY_PICK_OPEN_ANGLE_DEG   20U
 
-/* 当前机械方向：升降电机 CCW 下降、CW 上升。 */
+/* 当前机械方向：升降电机 CCW 下降、CW 上升。
+ * 2U 是 X42S 的“无限位碰撞回零”模式；回零方向不是此数值，
+ * 而是电机驱动器内部的回零方向参数。 */
 #define ARM_CONTROLLER_LIFT_HOME_MODE            2U
 
-/* Z 轴旋转电机：CCW 为机械顺时针，CW 为机械逆时针。 */
-#define ARM_CONTROLLER_Z_HOME_MODE               2U
-#define ARM_CONTROLLER_Z_PRE_HOME_ANGLE_DEG      (-250.0f)
-#define ARM_CONTROLLER_LIFT_DOWN_ANGLE_DEG       (-3518.7f)
+#define ARM_CONTROLLER_LIFT_DOWN_ANGLE_DEG       (-3660.6f)
 #define ARM_CONTROLLER_ZERO_LIFT_HOME_ANGLE_DEG  0.0f
-#define ARM_CONTROLLER_ZERO_Z_AFTER_HOME_DEG     270.0f
+#define ARM_CONTROLLER_PLATFORM_LIFT_ANGLE_DEG   (-1253.5f)
+/* 平台取料在原标定值基础上继续下降 50 度。 */
+#define ARM_CONTROLLER_PLATFORM_PICK_LIFT_ANGLE_DEG (-1303.5f)
+#define ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG  (-700.4f)
+#define ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG     (-3660.6f)
+/* 地面取料在原标定值基础上继续下降 50 度。 */
+#define ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG (-3710.6f)
+#define ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG (-3660.6f)
 
-#define ARM_CONTROLLER_PICK_LIFT_ANGLE_DEG       (-3864.0f)
-#define ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG (-7665.9f)
-#define ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG (-7500.0f)
-#define ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG (-895.5f)
-#define ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG (-4663.7f)
-#define ARM_CONTROLLER_PLACE_Z_ANGLE_DEG         180.0f
-#define ARM_CONTROLLER_PREPARE_Z_ANGLE_DEG       (-180.0f)
+#define ARM_CONTROLLER_Z_TRAY_POSITION           3840U
+#define ARM_CONTROLLER_Z_PLATFORM_POSITION       1310U
+#define ARM_CONTROLLER_Z_RING_1_POSITION         1887U
+#define ARM_CONTROLLER_Z_RING_2_POSITION         1310U
+#define ARM_CONTROLLER_Z_RING_3_POSITION         700U
+
+#define ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG  0.0f
+#define ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG  (-5.6f)
+#define ARM_CONTROLLER_HORIZONTAL_RING_1_ANGLE_DEG (-128.6f)
+/* 2号靶环未提供新的水平标定值，保持物料盘方向的安全伸长位置。 */
+#define ARM_CONTROLLER_HORIZONTAL_RING_2_ANGLE_DEG (-5.6f)
+#define ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG (-118.4f)
+
+/* 兼容旧任务接口；旧的“相对 180 度”命令现在映射为绝对协议位置。 */
+#define ARM_CONTROLLER_ZERO_Z_ANGLE_DEG            0.0f
+#define ARM_CONTROLLER_ZERO_Z_AFTER_HOME_DEG       3840.0f
+#define ARM_CONTROLLER_PICK_LIFT_ANGLE_DEG         ARM_CONTROLLER_PLATFORM_PICK_LIFT_ANGLE_DEG
+#define ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG
+#define ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG  ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG
+#define ARM_CONTROLLER_PLACE_Z_ANGLE_DEG            180.0f
+#define ARM_CONTROLLER_PREPARE_Z_ANGLE_DEG          (-180.0f)
 
 typedef enum
 {
@@ -60,46 +83,64 @@ typedef struct
 {
     motor_bus_t *bus;
     motor_t lift_motor;
-    motor_t z_motor;
+    motor_t horizontal_motor;
+    arm_horizontal_axis_t horizontal_axis;
+    arm_z_servo_axis_t z_servo_axis;
     gripper_servo_t gripper;
-    /* Z轴最后一次成功位置命令的绝对目标，用于运动期间抗惯性保持。 */
-    int64_t z_hold_target_pulse;
-    uint32_t z_last_hold_tick;
-    uint8_t z_hold_valid;
+    uint8_t target_ring;
     uint8_t initialized;
 } arm_controller_t;
 
 /**
- * 初始化机械臂电机，并只执行升降轴回最高点/归零。
- * 不执行 Z 轴旋转电机回零。
+ * 初始化升降轴、Z 轴舵机和夹爪，并执行升降轴碰撞回零。
  */
 arm_controller_result_t arm_controller_init(arm_controller_t *controller,
                                             motor_bus_t *bus);
 
 /**
- * 周期性保持Z轴最后目标位置。应在主循环中高频调用；函数内部限频，
- * 仅在电机已到位后重发绝对位置命令，不会打断正在执行的旋转动作。
+ * 绑定新的 Z 轴旋转舵机。串口和总线 ID 由硬件确认后传入；在绑定前，
+ * z_servo_axis 仅作为未就绪的软件接口存在。
+ */
+arm_controller_result_t arm_controller_bind_z_servo(
+    arm_controller_t *controller,
+    UART_HandleTypeDef *huart,
+    uint8_t servo_id,
+    const arm_z_servo_axis_config_t *config);
+
+/** 按当前硬件绑定 Z 轴舵机：USART2_TX / PA2。 */
+arm_controller_result_t arm_controller_bind_z_servo_usart2(
+    arm_controller_t *controller,
+    const arm_z_servo_axis_config_t *config);
+
+/** 初始化新的水平伸缩轴，使用绝对位置模式。motor_id 和行程参数待机械确认。 */
+arm_controller_result_t arm_controller_init_horizontal_axis(
+    arm_controller_t *controller,
+    motor_t *motor,
+    uint8_t motor_id,
+    const arm_horizontal_axis_config_t *config);
+
+/** 设置当前动作对应的靶环编号，用于选择 Z 舵机和水平轴标定位置。 */
+arm_controller_result_t arm_controller_set_target_ring(
+    arm_controller_t *controller,
+    uint8_t target_ring);
+
+/**
+ * 兼容旧任务层的 Z 轴保持接口。舵机由 PWM 持续保持目标位置，
+ * 因此本接口只检查舵机是否已就绪，不再重发步进电机位置命令。
  */
 arm_controller_result_t arm_controller_hold_z_position(
     arm_controller_t *controller);
 
 /**
- * 执行机械臂调零顺序：
- * 1. 夹爪闭合；
- * 2. Z 轴机械顺时针 250 度；
- * 3. 升降轴电机 CCW 下降 -3518.7 度；
- * 4. Z 轴按驱动器保存的顺时针方向执行碰撞回零。
- * 5. Z 轴回零成功后，升降轴回到 0 度；
- * 6. 升降轴到位后，Z 轴机械逆时针旋转 270 度。
+ * 执行机械臂调零顺序：夹爪闭合、升降轴回到最高点、清除水平轴当前位置，
+ * 最后将 Z 轴舵机转到物料盘方向。
  */
 arm_controller_result_t arm_controller_zero(arm_controller_t *controller);
 
 /**
- * 从已经准备好的平台取料并放到物料盘：
- * 1. 夹爪闭合取料；
- * 3. 升降轴回到 0 度；
- * 4. Z 轴机械逆时针 180 度；
- * 5. 夹爪打开下料。
+ * 从已经准备好的平台取料并放到物料盘：闭合夹爪并保持 200 ms，
+ * 升降轴回到 0 度，水平轴伸到物料盘方向并保持 100 ms，
+ * Z 轴转到物料盘方向，最后打开夹爪下料。
  */
 arm_controller_result_t arm_controller_pick_and_place(
     arm_controller_t *controller);
@@ -161,7 +202,11 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
 arm_controller_result_t arm_controller_finish_place(
     arm_controller_t *controller);
 
-/** 平台夹取准备：Z 轴顺时针 180 度、打开夹爪、下降到平台取料高度。 */
+/** 仅将 Z 轴转到平台位置，不移动水平轴、不下降。 */
+arm_controller_result_t arm_controller_preposition_platform_z(
+    arm_controller_t *controller);
+
+/** 平台夹取准备：Z 轴转到平台位置、打开夹爪、下降到平台取料高度。 */
 arm_controller_result_t arm_controller_prepare_platform_pick(
     arm_controller_t *controller);
 

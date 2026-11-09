@@ -1,5 +1,7 @@
 #include "task10_return_home.h"
 
+#include "chassis_motion_closed_loop.h"
+
 #include <string.h>
 
 /* 与底盘位置模式限速一致，保证等待时间按实际速度计算。 */
@@ -84,75 +86,21 @@ static task10_return_home_result_t task10_move_linear(
     int8_t body_x_sign,
     int8_t body_y_sign)
 {
-    uint32_t pulses_per_mm;
-    int32_t body_x_pulse;
-    int32_t body_y_pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-
     if ((task == NULL) || (distance_mm == 0U) ||
         ((body_x_sign == 0) && (body_y_sign == 0)))
     {
         return TASK10_RETURN_HOME_INVALID_PARAM;
     }
-    pulses_per_mm = task10_pulses_per_mm(task->chassis);
-    if (pulses_per_mm == 0U)
-    {
-        return TASK10_RETURN_HOME_INVALID_PARAM;
-    }
-    body_x_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_x_sign;
-    body_y_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_y_sign;
-    wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RR] = body_x_pulse - body_y_pulse;
-
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_move_linear_mm(
             task->chassis,
-            wheel_pulse,
-            TASK10_MOVE_SPEED_RPM,
-            TASK10_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)distance_mm * body_x_sign,
+            (int16_t)distance_mm * body_y_sign) != CHASSIS_MOTION_OK)
     {
         return TASK10_RETURN_HOME_CHASSIS_ERROR;
     }
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task10_linear_duration_ms(task->chassis,
-                                                        distance_mm);
+    task->move_duration_ms = 0U;
     return TASK10_RETURN_HOME_OK;
-}
-
-static int16_t task10_ring_offset_mm(uint8_t ring)
-{
-    if (ring == 1U)
-    {
-        return (int16_t)TASK10_RETURN_HOME_SPACING_MM;
-    }
-    if (ring == 3U)
-    {
-        return -(int16_t)TASK10_RETURN_HOME_SPACING_MM;
-    }
-    return 0;
-}
-
-static uint8_t task10_last_ring_from_qr(const QR_TaskCode_t *qr_task)
-{
-    uint8_t index;
-    uint8_t last_color;
-
-    if (qr_task == NULL)
-    {
-        return 0U;
-    }
-    last_color = qr_task->second_batch_color[QR_BATCH_ITEM_COUNT - 1U];
-    for (index = 0U; index < QR_BATCH_ITEM_COUNT; index++)
-    {
-        if (qr_task->first_batch_color[index] == last_color)
-        {
-            return qr_task->first_batch_position[index];
-        }
-    }
-    return 0U;
 }
 
 static task10_return_home_result_t task10_refresh_statistics(
@@ -236,11 +184,8 @@ task10_return_home_result_t task10_return_home_submit_qr(
             return TASK10_RETURN_HOME_INVALID_PARAM;
         }
     }
-    task->current_ring = task10_last_ring_from_qr(qr_task);
-    if ((task->current_ring < 1U) || (task->current_ring > 3U))
-    {
-        return TASK10_RETURN_HOME_INVALID_PARAM;
-    }
+    /* 任务9码垛期间底盘始终停在暂存区2号环。 */
+    task->current_ring = TASK10_RETURN_HOME_CENTER_RING;
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->task_ready = 1U;
     task->state = TASK10_RETURN_HOME_MOVE_TO_CENTER;
@@ -254,8 +199,6 @@ task10_return_home_result_t task10_return_home_step(
     task10_return_home_t *task)
 {
     task10_return_home_result_t result;
-    int16_t delta_mm;
-
     if ((task == NULL) || (task->chassis == NULL) ||
         (task->screen == NULL))
     {
@@ -267,29 +210,8 @@ task10_return_home_result_t task10_return_home_step(
             return TASK10_RETURN_HOME_WAITING;
 
         case TASK10_RETURN_HOME_MOVE_TO_CENTER:
-            delta_mm = task10_ring_offset_mm(TASK10_RETURN_HOME_CENTER_RING) -
-                       task10_ring_offset_mm(task->current_ring);
-            if (delta_mm == 0)
-            {
-                task->state = TASK10_RETURN_HOME_LEFT;
-                return TASK10_RETURN_HOME_OK;
-            }
-            result = task10_move_linear(
-                task,
-                (uint16_t)((delta_mm > 0) ? delta_mm : -delta_mm),
-                (delta_mm > 0) ? 1 : -1,
-                0);
-            if (result != TASK10_RETURN_HOME_OK)
-            {
-                return task10_fail(task, result,
-                                   "task10_move_to_center_failed");
-            }
-            task->state = TASK10_RETURN_HOME_WAIT_CENTER_MOVE;
-            return TASK10_RETURN_HOME_OK;
-
         case TASK10_RETURN_HOME_WAIT_CENTER_MOVE:
-            task10_wait_motion_done(task);
-            (void)mecanum_chassis_stop(task->chassis);
+            /* 兼容旧状态：任务9已固定结束在2号环，不再执行回中运动。 */
             task->current_ring = TASK10_RETURN_HOME_CENTER_RING;
             task->state = TASK10_RETURN_HOME_LEFT;
             return TASK10_RETURN_HOME_OK;

@@ -1,11 +1,9 @@
 #include "task1_start_qr.h"
 
+#include "chassis_motion_closed_loop.h"
+
 #include <stdio.h>
 #include <string.h>
-
-#define TASK1_MOVE_SPEED_RPM         60U
-#define TASK1_MOVE_ACCELERATION      240U
-#define TASK1_MOVE_SETTLE_MS        400U
 
 static void task1_status(task1_start_qr_t *task,
                          uint8_t status,
@@ -31,50 +29,11 @@ static task1_start_qr_result_t task1_fail(task1_start_qr_t *task,
     return result;
 }
 
-static uint32_t task1_pulses_per_mm(const mecanum_chassis_t *chassis)
-{
-    float circumference_mm;
-
-    if ((chassis == NULL) ||
-        (chassis->config.wheel_radius_m <= 0.0f) ||
-        (chassis->config.pulses_per_rev == 0U))
-    {
-        return 0U;
-    }
-
-    circumference_mm = 2.0f * 3.14159265359f *
-                       chassis->config.wheel_radius_m * 1000.0f;
-    return (uint32_t)(((float)MECANUM_POSITION_PULSES_PER_REV /
-                       circumference_mm) + 0.5f);
-}
-
-static uint32_t task1_move_duration_ms(const mecanum_chassis_t *chassis,
-                                       uint16_t distance_mm)
-{
-    float speed_mps;
-    float duration_ms;
-
-    if ((chassis == NULL) || (chassis->config.wheel_radius_m <= 0.0f))
-    {
-        return TASK1_MOVE_SETTLE_MS;
-    }
-
-    speed_mps = ((float)TASK1_MOVE_SPEED_RPM / 60.0f) *
-                2.0f * 3.14159265359f * chassis->config.wheel_radius_m;
-    duration_ms = ((float)distance_mm / 1000.0f) / speed_mps * 1000.0f;
-    return (uint32_t)duration_ms + TASK1_MOVE_SETTLE_MS;
-}
-
 static task1_start_qr_result_t task1_move(task1_start_qr_t *task,
                                           uint16_t distance_mm,
                                           int8_t body_x_sign,
                                           int8_t body_y_sign)
 {
-    int32_t body_x_pulse;
-    int32_t body_y_pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-    uint32_t pulses_per_mm;
-
     if ((task == NULL) || (task->chassis == NULL) ||
         (distance_mm == 0U) ||
         ((body_x_sign == 0) && (body_y_sign == 0)))
@@ -82,33 +41,15 @@ static task1_start_qr_result_t task1_move(task1_start_qr_t *task,
         return TASK1_START_QR_INVALID_PARAM;
     }
 
-    pulses_per_mm = task1_pulses_per_mm(task->chassis);
-    if (pulses_per_mm == 0U)
-    {
-        return TASK1_START_QR_INVALID_PARAM;
-    }
-
-    body_x_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_x_sign;
-    body_y_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_y_sign;
-    wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RR] = body_x_pulse - body_y_pulse;
-
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_move_linear_mm(
             task->chassis,
-            wheel_pulse,
-            TASK1_MOVE_SPEED_RPM,
-            TASK1_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)distance_mm * body_x_sign,
+            (int16_t)distance_mm * body_y_sign) != CHASSIS_MOTION_OK)
     {
         return TASK1_START_QR_CHASSIS_ERROR;
     }
-
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task1_move_duration_ms(task->chassis,
-                                                     distance_mm);
+    task->move_duration_ms = 0U;
     return TASK1_START_QR_OK;
 }
 
@@ -222,7 +163,7 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             task->state = TASK1_START_QR_LATERAL_AND_ZERO;
             task1_status(task, TASK1_START_QR_STATUS_MOVE,
                          (task->start_zone == START_ZONE_2) ?
-                         "task1_right_1150mm_start" : "task1_left_1050mm_start");
+                         "task1_right_1050mm_start" : "task1_left_1050mm_start");
             return TASK1_START_QR_OK;
 
         case TASK1_START_QR_LATERAL_AND_ZERO:
@@ -236,7 +177,7 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             {
                 return task1_fail(task, result,
                                   (task->start_zone == START_ZONE_2) ?
-                                  "task1_right_1150mm_failed" : "task1_left_1050mm_failed");
+                                  "task1_right_1050mm_failed" : "task1_left_1050mm_failed");
             }
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
                          (task->start_zone == START_ZONE_2) ?
@@ -252,6 +193,19 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
                          (task->start_zone == START_ZONE_2) ?
                          "task1_arm_zero_during_right_done" : "task1_arm_zero_during_left_done");
+            /* 任务 2 首次平台取料需要面向平台；这里只旋转 Z 轴，
+             * 不下降、不改变水平轴，避免任务 2 再次重复旋转。 */
+            task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
+                         "task1_preposition_platform_z_start");
+            if (arm_controller_preposition_platform_z(task->arm) !=
+                ARM_CONTROLLER_OK)
+            {
+                return task1_fail(task,
+                                  TASK1_START_QR_ARM_ERROR,
+                                  "task1_preposition_platform_z_failed");
+            }
+            task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
+                         "task1_preposition_platform_z_done");
             task->state = TASK1_START_QR_FORWARD_QR;
             return TASK1_START_QR_OK;
 

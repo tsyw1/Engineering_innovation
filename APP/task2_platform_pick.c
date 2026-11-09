@@ -1,12 +1,9 @@
 #include "task2_platform_pick.h"
 
+#include "chassis_motion_closed_loop.h"
+
 #include <stdio.h>
 #include <string.h>
-
-/* 与底盘位置模式约60 RPM限速一致，保证等待时间按实际速度计算。 */
-#define TASK2_MOVE_SPEED_RPM         60U
-#define TASK2_MOVE_ACCELERATION      240U
-#define TASK2_MOVE_SETTLE_MS        400U
 
 static void task2_status(task2_platform_pick_t *task,
                          uint8_t status,
@@ -50,51 +47,12 @@ static task2_platform_pick_result_t task2_fail(
     return result;
 }
 
-static uint32_t task2_pulses_per_mm(const mecanum_chassis_t *chassis)
-{
-    float circumference_mm;
-
-    if ((chassis == NULL) ||
-        (chassis->config.wheel_radius_m <= 0.0f) ||
-        (chassis->config.pulses_per_rev == 0U))
-    {
-        return 0U;
-    }
-
-    circumference_mm = 2.0f * 3.14159265359f *
-                       chassis->config.wheel_radius_m * 1000.0f;
-    return (uint32_t)(((float)MECANUM_POSITION_PULSES_PER_REV /
-                       circumference_mm) + 0.5f);
-}
-
-static uint32_t task2_move_duration_ms(const mecanum_chassis_t *chassis,
-                                       uint16_t distance_mm)
-{
-    float speed_mps;
-    float duration_ms;
-
-    if ((chassis == NULL) || (chassis->config.wheel_radius_m <= 0.0f))
-    {
-        return TASK2_MOVE_SETTLE_MS;
-    }
-
-    speed_mps = ((float)TASK2_MOVE_SPEED_RPM / 60.0f) *
-                2.0f * 3.14159265359f * chassis->config.wheel_radius_m;
-    duration_ms = ((float)distance_mm / 1000.0f) / speed_mps * 1000.0f;
-    return (uint32_t)duration_ms + TASK2_MOVE_SETTLE_MS;
-}
-
 static task2_platform_pick_result_t task2_move(
     task2_platform_pick_t *task,
     uint16_t distance_mm,
     int8_t body_x_sign,
     int8_t body_y_sign)
 {
-    int32_t body_x_pulse;
-    int32_t body_y_pulse;
-    int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
-    uint32_t pulses_per_mm;
-
     if ((task == NULL) || (task->chassis == NULL) ||
         (distance_mm == 0U) ||
         ((body_x_sign == 0) && (body_y_sign == 0)))
@@ -102,33 +60,15 @@ static task2_platform_pick_result_t task2_move(
         return TASK2_PLATFORM_PICK_INVALID_PARAM;
     }
 
-    pulses_per_mm = task2_pulses_per_mm(task->chassis);
-    if (pulses_per_mm == 0U)
-    {
-        return TASK2_PLATFORM_PICK_INVALID_PARAM;
-    }
-
-    body_x_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_x_sign;
-    body_y_pulse = (int32_t)pulses_per_mm * (int32_t)distance_mm *
-                   (int32_t)body_y_sign;
-    wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
-    wheel_pulse[MECANUM_WHEEL_RR] = body_x_pulse - body_y_pulse;
-
-    if (mecanum_chassis_set_position_increment(
+    if (chassis_motion_move_linear_mm(
             task->chassis,
-            wheel_pulse,
-            TASK2_MOVE_SPEED_RPM,
-            TASK2_MOVE_ACCELERATION) != MECANUM_OK)
+            (int16_t)distance_mm * body_x_sign,
+            (int16_t)distance_mm * body_y_sign) != CHASSIS_MOTION_OK)
     {
         return TASK2_PLATFORM_PICK_CHASSIS_ERROR;
     }
-
     task->move_start_tick = HAL_GetTick();
-    task->move_duration_ms = task2_move_duration_ms(task->chassis,
-                                                     distance_mm);
+    task->move_duration_ms = 0U;
     return TASK2_PLATFORM_PICK_OK;
 }
 
@@ -199,10 +139,28 @@ static task2_platform_pick_result_t task2_start_item(
     task2_status(task,
                  TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
                  "task2_platform_prepare_pick_start");
-    adjust_result = vision_fine_adjust_prepare_platform_pick_and_start(
-        task->fine_adjust,
-        task->arm,
-        task->target_ids[task->item_index]);
+    if (task->item_index == 0U)
+    {
+        /* 任务 1 已将 Z 轴预置到平台位置，首件只打开夹爪并下降。 */
+        if (arm_controller_prepare_platform_pick_aligned(task->arm) !=
+            ARM_CONTROLLER_OK)
+        {
+            return task2_fail(task,
+                              TASK2_PLATFORM_PICK_ARM_ERROR,
+                              "task2_platform_prepare_pick_failed");
+        }
+        adjust_result = vision_fine_adjust_start(
+            task->fine_adjust,
+            VISION_UART_MODE_MATERIAL,
+            task->target_ids[task->item_index]);
+    }
+    else
+    {
+        adjust_result = vision_fine_adjust_prepare_platform_pick_and_start(
+            task->fine_adjust,
+            task->arm,
+            task->target_ids[task->item_index]);
+    }
     if (adjust_result != VISION_FINE_ADJUST_OK)
     {
         return task2_fail(task,
@@ -459,7 +417,7 @@ task2_platform_pick_result_t task2_platform_pick_step(
         case TASK2_PLATFORM_PICK_RIGHT:
             task2_status(task,
                          TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
-                         "task2_right_960mm_start");
+                         "task2_right_920mm_start");
             result = task2_move(task,
                                 TASK2_PLATFORM_PICK_RIGHT_MM,
                                 0,
@@ -467,7 +425,7 @@ task2_platform_pick_result_t task2_platform_pick_step(
             if (result != TASK2_PLATFORM_PICK_OK)
             {
                 return task2_fail(task, result,
-                                  "task2_right_960mm_failed");
+                                  "task2_right_920mm_failed");
             }
             task2_wait_move_done(task);
             (void)mecanum_chassis_stop(task->chassis);
