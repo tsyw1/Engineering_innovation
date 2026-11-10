@@ -1,5 +1,7 @@
 #include "screen.h"
 
+#include "QR.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -317,7 +319,37 @@ screen_result_t screen_set_text(screen_t *screen,
 screen_result_t screen_show_task_code(screen_t *screen,
                                       const char *task_code)
 {
-    return screen_set_text(screen, SCREEN_TASK_TEXT_CONTROL, task_code);
+    char first_half[(QR_TASK_TEXT_LENGTH / 2U) + 2U];
+    char second_half[(QR_TASK_TEXT_LENGTH / 2U) + 1U];
+    const size_t half_length = QR_TASK_TEXT_LENGTH / 2U;
+    screen_result_t result;
+
+    if ((task_code == NULL) ||
+        (strlen(task_code) != QR_TASK_TEXT_LENGTH) ||
+        (task_code[half_length] != '+'))
+    {
+        return SCREEN_INVALID_PARAM;
+    }
+
+    memcpy(first_half, task_code, half_length);
+    first_half[half_length] = task_code[half_length];
+    first_half[half_length + 1U] = '\0';
+    memcpy(second_half,
+           &task_code[half_length + 1U],
+           half_length);
+    second_half[half_length] = '\0';
+
+    result = screen_set_text(screen,
+                             SCREEN_TASK_FIRST_HALF_CONTROL,
+                             first_half);
+    if (result != SCREEN_OK)
+    {
+        return result;
+    }
+
+    return screen_set_text(screen,
+                           SCREEN_TASK_SECOND_HALF_CONTROL,
+                           second_half);
 }
 
 screen_result_t screen_show_pick_count(screen_t *screen,

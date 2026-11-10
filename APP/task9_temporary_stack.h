@@ -21,7 +21,6 @@ extern "C" {
 #define TASK9_TEMPORARY_STACK_BACKWARD_RING_2_MM 860U
 #define TASK9_TEMPORARY_STACK_BACKWARD_RING_3_MM 660U
 #define TASK9_TEMPORARY_STACK_CENTER 2U
-#define TASK9_TEMPORARY_STACK_TRAY_SETTLE_MS 400U
 
 typedef void (*task9_temporary_stack_status_fn)(uint8_t status,
                                                  const char *event);
@@ -78,11 +77,14 @@ typedef struct
     QR_TaskCode_t qr_task;
     uint32_t move_start_tick;
     uint32_t move_duration_ms;
+    int16_t saved_tolerance_x_pixel;
+    int16_t saved_tolerance_y_pixel;
+    uint16_t saved_position_settle_ms;
     uint8_t item_index;
     uint8_t current_ring;
     uint8_t target_ring;
-    uint8_t target_color;
     uint8_t task_ready;
+    uint8_t fine_adjust_config_saved;
     task9_temporary_stack_state_t state;
 } task9_temporary_stack_t;
 

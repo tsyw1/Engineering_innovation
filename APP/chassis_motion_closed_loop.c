@@ -84,17 +84,48 @@ static chassis_motion_result_t motion_update_feedback(
     mecanum_encoder_velocity_t *velocity,
     hwt101ct_data_t *yaw_data)
 {
+    mecanum_result_t feedback_result;
+    mecanum_result_t encoder_result;
+    uint32_t wait_start_ms;
+
     if ((s_motion.chassis == NULL) || (velocity == NULL) ||
         (yaw_data == NULL))
     {
         return CHASSIS_MOTION_INVALID_PARAM;
     }
-    (void)mecanum_chassis_feedback_task(s_motion.chassis);
-    if (mecanum_chassis_update_encoder_velocity(s_motion.chassis) !=
-        MECANUM_OK)
+
+    feedback_result = mecanum_chassis_feedback_task(s_motion.chassis);
+    if ((feedback_result != MECANUM_OK) &&
+        (feedback_result != MECANUM_NOT_READY))
     {
         return CHASSIS_MOTION_SENSOR_ERROR;
     }
+
+    /*
+     * 四轮速度查询通过 CAN 异步返回。长时间执行机械臂动作后缓存会过期，
+     * 因此给接收中断一个有界窗口刷新四路反馈，避免把暂时未就绪当成故障。
+     */
+    wait_start_ms = HAL_GetTick();
+    for (;;)
+    {
+        encoder_result =
+            mecanum_chassis_update_encoder_velocity(s_motion.chassis);
+        if (encoder_result == MECANUM_OK)
+        {
+            break;
+        }
+        if (encoder_result != MECANUM_NOT_READY)
+        {
+            return CHASSIS_MOTION_SENSOR_ERROR;
+        }
+        if ((HAL_GetTick() - wait_start_ms) >=
+            CHASSIS_ODOMETRY_FEEDBACK_WAIT_TIMEOUT_MS)
+        {
+            return CHASSIS_MOTION_SENSOR_ERROR;
+        }
+        HAL_Delay(CHASSIS_ODOMETRY_FEEDBACK_RETRY_MS);
+    }
+
     if (mecanum_chassis_get_encoder_velocity(s_motion.chassis, velocity) !=
         MECANUM_OK)
     {

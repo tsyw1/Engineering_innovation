@@ -9,6 +9,8 @@
 #define TASK9_MOVE_ACCELERATION       240U
 #define TASK9_MOVE_SETTLE_MS         400U
 #define TASK9_ROTATE_CLOCKWISE_SIGN  (-1)
+#define TASK9_TEMPORARY_STACK_TOLERANCE_PIXEL       5
+#define TASK9_TEMPORARY_STACK_POSITION_SETTLE_MS   40U
 
 static void task9_status(task9_temporary_stack_t *task,
                          uint8_t status,
@@ -20,6 +22,46 @@ static void task9_status(task9_temporary_stack_t *task,
     }
 }
 
+static void task9_apply_fine_adjust_config(task9_temporary_stack_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL) ||
+        (task->fine_adjust_config_saved != 0U))
+    {
+        return;
+    }
+
+    task->saved_tolerance_x_pixel =
+        task->fine_adjust->config.tolerance_x_pixel;
+    task->saved_tolerance_y_pixel =
+        task->fine_adjust->config.tolerance_y_pixel;
+    task->saved_position_settle_ms =
+        task->fine_adjust->config.position_settle_ms;
+    task->fine_adjust->config.tolerance_x_pixel =
+        TASK9_TEMPORARY_STACK_TOLERANCE_PIXEL;
+    task->fine_adjust->config.tolerance_y_pixel =
+        TASK9_TEMPORARY_STACK_TOLERANCE_PIXEL;
+    task->fine_adjust->config.position_settle_ms =
+        TASK9_TEMPORARY_STACK_POSITION_SETTLE_MS;
+    task->fine_adjust_config_saved = 1U;
+}
+
+static void task9_restore_fine_adjust_config(task9_temporary_stack_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL) ||
+        (task->fine_adjust_config_saved == 0U))
+    {
+        return;
+    }
+
+    task->fine_adjust->config.tolerance_x_pixel =
+        task->saved_tolerance_x_pixel;
+    task->fine_adjust->config.tolerance_y_pixel =
+        task->saved_tolerance_y_pixel;
+    task->fine_adjust->config.position_settle_ms =
+        task->saved_position_settle_ms;
+    task->fine_adjust_config_saved = 0U;
+}
+
 static task9_temporary_stack_result_t task9_fail(
     task9_temporary_stack_t *task,
     task9_temporary_stack_result_t result,
@@ -28,6 +70,7 @@ static task9_temporary_stack_result_t task9_fail(
     if (task != NULL)
     {
         vision_fine_adjust_abort(task->fine_adjust);
+        task9_restore_fine_adjust_config(task);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK9_TEMPORARY_STACK_FAILED;
@@ -193,13 +236,12 @@ static task9_temporary_stack_result_t task9_select_target_ring(
 }
 
 static uint8_t task9_find_target(const task9_temporary_stack_t *task,
-                                 uint8_t *ring,
-                                 uint8_t *color)
+                                 uint8_t *ring)
 {
     uint8_t index;
     uint8_t material_color;
 
-    if ((task == NULL) || (ring == NULL) || (color == NULL))
+    if ((task == NULL) || (ring == NULL))
     {
         return 0U;
     }
@@ -209,7 +251,29 @@ static uint8_t task9_find_target(const task9_temporary_stack_t *task,
         if (task->qr_task.first_batch_color[index] == material_color)
         {
             *ring = task->qr_task.first_batch_position[index];
-            *color = task->qr_task.first_batch_color[index];
+            return 1U;
+        }
+    }
+    return 0U;
+}
+
+static uint8_t task9_find_material_at_ring(
+    const task9_temporary_stack_t *task,
+    uint8_t ring,
+    uint8_t *material_id)
+{
+    uint8_t index;
+
+    if ((task == NULL) || (material_id == NULL) ||
+        (ring < 1U) || (ring > 3U))
+    {
+        return 0U;
+    }
+    for (index = 0U; index < QR_BATCH_ITEM_COUNT; index++)
+    {
+        if (task->qr_task.first_batch_position[index] == ring)
+        {
+            *material_id = task->qr_task.first_batch_color[index];
             return 1U;
         }
     }
@@ -231,7 +295,6 @@ static task9_temporary_stack_result_t task9_set_tray_position(
     {
         return TASK9_TEMPORARY_STACK_TRAY_ERROR;
     }
-    HAL_Delay(TASK9_TEMPORARY_STACK_TRAY_SETTLE_MS);
     return TASK9_TEMPORARY_STACK_OK;
 }
 
@@ -300,8 +363,22 @@ task9_temporary_stack_result_t task9_temporary_stack_submit_qr(
             return TASK9_TEMPORARY_STACK_INVALID_PARAM;
         }
     }
+    if (vision_fine_adjust_preselect_mode(
+            task->fine_adjust,
+            VISION_UART_MODE_MATERIAL) != VISION_FINE_ADJUST_OK)
+    {
+        return TASK9_TEMPORARY_STACK_VISION_ERROR;
+    }
+    task9_apply_fine_adjust_config(task);
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
+    /* 跨区行驶和首次视觉校准期间预置第1工位。 */
+    if (task9_set_tray_position(task) != TASK9_TEMPORARY_STACK_OK)
+    {
+        return task9_fail(task,
+                          TASK9_TEMPORARY_STACK_TRAY_ERROR,
+                          "task9_tray_position_failed");
+    }
     /* 任务8结束后底盘仍停在粗加工区2号环。 */
     task->current_ring = TASK9_TEMPORARY_STACK_CENTER;
     task->task_ready = 1U;
@@ -319,6 +396,7 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
     vision_fine_adjust_result_t adjust_result;
     arm_controller_result_t arm_result;
     uint16_t distance_mm;
+    uint8_t center_material_id;
 
     if ((task == NULL) || (task->arm == NULL) ||
         (task->chassis == NULL) || (task->fine_adjust == NULL) ||
@@ -398,12 +476,11 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
 
         case TASK9_TEMPORARY_STACK_PREPARE_ITEM:
             if (task9_find_target(task,
-                                  &task->target_ring,
-                                  &task->target_color) == 0U)
+                                  &task->target_ring) == 0U)
             {
                 return task9_fail(task,
                                   TASK9_TEMPORARY_STACK_INVALID_PARAM,
-                                  "task9_target_color_not_found");
+                                  "task9_qr_target_ring_not_found");
             }
             result = task9_select_target_ring(task);
             if (result != TASK9_TEMPORARY_STACK_OK)
@@ -414,9 +491,16 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             task9_status(task,
                          TASK9_TEMPORARY_STACK_STATUS_PREPARE,
                          "task9_stack_prepare_start");
-            /* 仅第一件需要下降准备；后续已保持码垛高度、暂存区朝向和开爪。 */
             if (task->item_index == 0U)
             {
+                if (arm_controller_set_target_ring(
+                        task->arm,
+                        TASK9_TEMPORARY_STACK_CENTER) != ARM_CONTROLLER_OK)
+                {
+                    return task9_fail(task,
+                                      TASK9_TEMPORARY_STACK_ARM_ERROR,
+                                      "task9_set_center_ring_failed");
+                }
                 arm_result = arm_controller_prepare_stack_pick(task->arm);
                 if (arm_result != ARM_CONTROLLER_OK)
                 {
@@ -424,27 +508,57 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
                                       TASK9_TEMPORARY_STACK_ARM_ERROR,
                                       "task9_stack_prepare_failed");
                 }
+                if (task9_find_material_at_ring(
+                        task,
+                        TASK9_TEMPORARY_STACK_CENTER,
+                        &center_material_id) == 0U)
+                {
+                    return task9_fail(task,
+                                      TASK9_TEMPORARY_STACK_INVALID_PARAM,
+                                      "task9_center_material_not_found");
+                }
+                if (vision_fine_adjust_start_preselected(
+                        task->fine_adjust,
+                        VISION_UART_MODE_MATERIAL,
+                        center_material_id) !=
+                    VISION_FINE_ADJUST_OK)
+                {
+                    return task9_fail(task,
+                                      TASK9_TEMPORARY_STACK_VISION_ERROR,
+                                      "task9_center_material_mode_start_failed");
+                }
+                task->state = TASK9_TEMPORARY_STACK_ALIGN;
+                return TASK9_TEMPORARY_STACK_OK;
             }
-            if (vision_fine_adjust_start(task->fine_adjust,
-                                         VISION_UART_MODE_MATERIAL,
-                                         task->target_color) !=
-                VISION_FINE_ADJUST_OK)
+
+            if (arm_controller_set_target_ring(task->arm,
+                                               task->target_ring) !=
+                ARM_CONTROLLER_OK)
             {
                 return task9_fail(task,
-                                  TASK9_TEMPORARY_STACK_VISION_ERROR,
-                                  "task9_material_mode_start_failed");
+                                  TASK9_TEMPORARY_STACK_ARM_ERROR,
+                                  "task9_set_target_ring_failed");
             }
-            task->state = TASK9_TEMPORARY_STACK_ALIGN;
+            task->state = TASK9_TEMPORARY_STACK_PLACE_ITEM;
             return TASK9_TEMPORARY_STACK_OK;
 
         case TASK9_TEMPORARY_STACK_ALIGN:
             adjust_result = vision_fine_adjust_step(task->fine_adjust);
             if (adjust_result == VISION_FINE_ADJUST_REACHED)
             {
+                if (arm_controller_set_target_ring(task->arm,
+                                                   task->target_ring) !=
+                    ARM_CONTROLLER_OK)
+                {
+                    return task9_fail(task,
+                                      TASK9_TEMPORARY_STACK_ARM_ERROR,
+                                      "task9_set_target_ring_failed");
+                }
+                (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK9_TEMPORARY_STACK_PLACE_ITEM;
                 task9_status(task,
                              TASK9_TEMPORARY_STACK_STATUS_FINE_ADJUST,
-                             "task9_fine_adjust_done");
+                             "task9_center_ring_fine_adjust_done");
                 return TASK9_TEMPORARY_STACK_OK;
             }
             if (adjust_result == VISION_FINE_ADJUST_TIMEOUT_RESULT)
@@ -469,12 +583,6 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             return TASK9_TEMPORARY_STACK_WAITING;
 
         case TASK9_TEMPORARY_STACK_PLACE_ITEM:
-            result = task9_set_tray_position(task);
-            if (result != TASK9_TEMPORARY_STACK_OK)
-            {
-                return task9_fail(task, result,
-                                  "task9_tray_position_failed");
-            }
             task9_status(task,
                          TASK9_TEMPORARY_STACK_STATUS_PLACE,
                          "task9_stack_item_start");
@@ -512,21 +620,20 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             task->item_index++;
             if (task->item_index >= TASK9_TEMPORARY_STACK_ITEM_COUNT)
             {
-                if (material_tray_servo_set_position(
-                        task->tray,
-                        MATERIAL_TRAY_POSITION_2) != MATERIAL_TRAY_SERVO_OK)
-                {
-                    return task9_fail(task,
-                                      TASK9_TEMPORARY_STACK_TRAY_ERROR,
-                                      "task9_tray_return_to_position_2_failed");
-                }
-                HAL_Delay(TASK9_TEMPORARY_STACK_TRAY_SETTLE_MS);
                 (void)mecanum_chassis_stop(task->chassis);
+                task9_restore_fine_adjust_config(task);
                 task->state = TASK9_TEMPORARY_STACK_DONE;
                 task9_status(task,
                              TASK9_TEMPORARY_STACK_STATUS_DONE,
                              "task9_three_items_stacked");
                 return TASK9_TEMPORARY_STACK_OK;
+            }
+            /* 机械臂已离开料盘，立即预置下一工位。 */
+            result = task9_set_tray_position(task);
+            if (result != TASK9_TEMPORARY_STACK_OK)
+            {
+                return task9_fail(task, result,
+                                  "task9_tray_position_failed");
             }
             task->state = TASK9_TEMPORARY_STACK_PREPARE_ITEM;
             return TASK9_TEMPORARY_STACK_OK;

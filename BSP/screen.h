@@ -7,9 +7,10 @@
 #include <stdint.h>
 
 #define SCREEN_DEFAULT_TIMEOUT_MS    100U
-#define SCREEN_TASK_TEXT_CONTROL     "t0"
-#define SCREEN_PICK_COUNT_CONTROL    "t3"
-#define SCREEN_PLACE_COUNT_CONTROL   "t5"
+#define SCREEN_TASK_FIRST_HALF_CONTROL  "t3"
+#define SCREEN_TASK_SECOND_HALF_CONTROL "t1"
+#define SCREEN_PICK_COUNT_CONTROL       "t5"
+#define SCREEN_PLACE_COUNT_CONTROL      "t0"
 #define SCREEN_START_ZONE_1_COMMAND   0x31U
 #define SCREEN_START_ZONE_2_COMMAND   0x32U
 
@@ -56,25 +57,25 @@ screen_result_t screen_set_text(screen_t *screen,
                                 const char *control_name,
                                 const char *text);
 
-/** 将二维码任务码显示到 t0 文本控件。 */
+/** 将二维码任务码的前、后两组分别显示到 t3、t1 文本控件。 */
 screen_result_t screen_show_task_code(screen_t *screen,
                                       const char *task_code);
 
-/** 将成功抓取次数显示到 t3 文本控件。 */
+/** 将成功抓取次数显示到 t5 文本控件。 */
 screen_result_t screen_show_pick_count(screen_t *screen,
                                        uint32_t count);
 
-/** 将放到正确靶环或已有物料上的成功次数显示到 t5 文本控件。 */
+/** 将放到正确靶环或已有物料上的成功次数显示到 t0 文本控件。 */
 screen_result_t screen_show_place_count(screen_t *screen,
                                         uint32_t count);
 
-/** 清零抓取/放置统计，并同步刷新 t3、t5。 */
+/** 清零抓取/放置统计，并同步刷新 t5、t0。 */
 screen_result_t screen_reset_statistics(screen_t *screen);
 
-/** 在一次抓取动作确认成功后调用，计数加 1 并刷新 t3。 */
+/** 在一次抓取动作确认成功后调用，计数加 1 并刷新 t5。 */
 screen_result_t screen_record_successful_pick(screen_t *screen);
 
-/** 在一次靶环/已有物料正确放置动作确认成功后调用，计数加 1 并刷新 t5。 */
+/** 在一次靶环/已有物料正确放置动作确认成功后调用，计数加 1 并刷新 t0。 */
 screen_result_t screen_record_successful_place(screen_t *screen);
 
 #endif /* ENGINEERING_INNOVATION_SCREEN_H */

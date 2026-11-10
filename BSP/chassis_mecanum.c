@@ -16,8 +16,8 @@
 #define MECANUM_SPEED_COMMAND_RETRY_DELAY_MS 2U
 /* Emm 位置命令拆成多帧 CAN 数据，多台电机连续发送时留出间隔。 */
 #define MECANUM_POSITION_COMMAND_GAP_MS MECANUM_CAN_COMMAND_GAP_MS
-/* 位置模式限制为约60 RPM，匹配任务层的路线速度。 */
-#define MECANUM_POSITION_MAX_SPEED_MPS 0.246f
+/* 位置模式限制为约90 RPM，用于缩短视觉细调的小步运动时间。 */
+#define MECANUM_POSITION_MAX_SPEED_MPS 0.370f
 
 static float mecanum_abs_f(float value)
 {

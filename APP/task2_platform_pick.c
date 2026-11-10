@@ -149,17 +149,18 @@ static task2_platform_pick_result_t task2_start_item(
                               TASK2_PLATFORM_PICK_ARM_ERROR,
                               "task2_platform_prepare_pick_failed");
         }
-        adjust_result = vision_fine_adjust_start(
+        adjust_result = vision_fine_adjust_start_preselected(
             task->fine_adjust,
             VISION_UART_MODE_MATERIAL,
             task->target_ids[task->item_index]);
     }
     else
     {
-        adjust_result = vision_fine_adjust_prepare_platform_pick_and_start(
-            task->fine_adjust,
-            task->arm,
-            task->target_ids[task->item_index]);
+        adjust_result =
+            vision_fine_adjust_prepare_platform_pick_and_start_preselected(
+                task->fine_adjust,
+                task->arm,
+                task->target_ids[task->item_index]);
     }
     if (adjust_result != VISION_FINE_ADJUST_OK)
     {
@@ -429,6 +430,14 @@ task2_platform_pick_result_t task2_platform_pick_step(
             }
             task2_wait_move_done(task);
             (void)mecanum_chassis_stop(task->chassis);
+            if (vision_fine_adjust_preselect_mode(
+                    task->fine_adjust,
+                    VISION_UART_MODE_MATERIAL) != VISION_FINE_ADJUST_OK)
+            {
+                return task2_fail(task,
+                                  TASK2_PLATFORM_PICK_VISION_ERROR,
+                                  "task2_material_mode_select_failed");
+            }
             if (task2_start_first_item(task) != TASK2_PLATFORM_PICK_OK)
             {
                 return task2_fail(task,

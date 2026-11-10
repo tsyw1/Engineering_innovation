@@ -21,7 +21,6 @@ extern "C" {
 #define TASK5_TEMPORARY_RING_BACKWARD_RING_2_MM 860U
 #define TASK5_TEMPORARY_RING_BACKWARD_RING_3_MM 700U
 #define TASK5_TEMPORARY_RING_CENTER 2U
-#define TASK5_TEMPORARY_RING_TRAY_SETTLE_MS 400U
 
 typedef void (*task5_temporary_ring_status_fn)(uint8_t status,
                                                 const char *event);
@@ -77,10 +76,14 @@ typedef struct
     QR_TaskCode_t qr_task;
     uint32_t move_start_tick;
     uint32_t move_duration_ms;
+    int16_t saved_tolerance_x_pixel;
+    int16_t saved_tolerance_y_pixel;
+    uint16_t saved_position_settle_ms;
     uint8_t item_index;
     uint8_t current_ring;
     uint8_t target_ring;
     uint8_t task_ready;
+    uint8_t fine_adjust_config_saved;
     task5_temporary_ring_state_t state;
 } task5_temporary_ring_t;
 

@@ -9,6 +9,8 @@
 #define TASK3_MOVE_ACCELERATION       240U
 #define TASK3_MOVE_SETTLE_MS         400U
 #define TASK3_ROTATE_SIGN              1
+#define TASK3_COARSE_RING_TOLERANCE_PIXEL       5
+#define TASK3_COARSE_RING_POSITION_SETTLE_MS   40U
 
 static void task3_status(task3_coarse_ring_t *task,
                          uint8_t status,
@@ -20,6 +22,46 @@ static void task3_status(task3_coarse_ring_t *task,
     }
 }
 
+static void task3_apply_fine_adjust_config(task3_coarse_ring_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL) ||
+        (task->fine_adjust_config_saved != 0U))
+    {
+        return;
+    }
+
+    task->saved_tolerance_x_pixel =
+        task->fine_adjust->config.tolerance_x_pixel;
+    task->saved_tolerance_y_pixel =
+        task->fine_adjust->config.tolerance_y_pixel;
+    task->saved_position_settle_ms =
+        task->fine_adjust->config.position_settle_ms;
+    task->fine_adjust->config.tolerance_x_pixel =
+        TASK3_COARSE_RING_TOLERANCE_PIXEL;
+    task->fine_adjust->config.tolerance_y_pixel =
+        TASK3_COARSE_RING_TOLERANCE_PIXEL;
+    task->fine_adjust->config.position_settle_ms =
+        TASK3_COARSE_RING_POSITION_SETTLE_MS;
+    task->fine_adjust_config_saved = 1U;
+}
+
+static void task3_restore_fine_adjust_config(task3_coarse_ring_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL) ||
+        (task->fine_adjust_config_saved == 0U))
+    {
+        return;
+    }
+
+    task->fine_adjust->config.tolerance_x_pixel =
+        task->saved_tolerance_x_pixel;
+    task->fine_adjust->config.tolerance_y_pixel =
+        task->saved_tolerance_y_pixel;
+    task->fine_adjust->config.position_settle_ms =
+        task->saved_position_settle_ms;
+    task->fine_adjust_config_saved = 0U;
+}
+
 static task3_coarse_ring_result_t task3_fail(
     task3_coarse_ring_t *task,
     task3_coarse_ring_result_t result,
@@ -28,6 +70,7 @@ static task3_coarse_ring_result_t task3_fail(
     if (task != NULL)
     {
         vision_fine_adjust_abort(task->fine_adjust);
+        task3_restore_fine_adjust_config(task);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK3_COARSE_RING_FAILED;
@@ -193,7 +236,6 @@ static task3_coarse_ring_result_t task3_set_tray_position(
                           TASK3_COARSE_RING_TRAY_ERROR,
                           "task3_tray_position_failed");
     }
-    HAL_Delay(TASK3_COARSE_RING_TRAY_SETTLE_MS);
     return TASK3_COARSE_RING_OK;
 }
 
@@ -244,8 +286,20 @@ task3_coarse_ring_result_t task3_coarse_ring_submit_qr(
             return TASK3_COARSE_RING_INVALID_PARAM;
         }
     }
+    if (vision_fine_adjust_preselect_mode(
+            task->fine_adjust,
+            VISION_UART_MODE_TARGET_RING) != VISION_FINE_ADJUST_OK)
+    {
+        return TASK3_COARSE_RING_VISION_ERROR;
+    }
+    task3_apply_fine_adjust_config(task);
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
+    /* 行驶和首次视觉校准期间预置第1工位。 */
+    if (task3_set_tray_position(task) != TASK3_COARSE_RING_OK)
+    {
+        return TASK3_COARSE_RING_TRAY_ERROR;
+    }
     task->current_ring = TASK3_COARSE_RING_CENTER;
     task->task_ready = 1U;
     task->state = TASK3_COARSE_RING_LEFT;
@@ -297,15 +351,6 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
             }
             task3_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
-            adjust_result = vision_fine_adjust_preselect_mode(
-                task->fine_adjust,
-                VISION_UART_MODE_TARGET_RING);
-            if (adjust_result != VISION_FINE_ADJUST_OK)
-            {
-                return task3_fail(task,
-                                  TASK3_COARSE_RING_VISION_ERROR,
-                                  "task3_target_ring_mode_early_failed");
-            }
             task->state = TASK3_COARSE_RING_RIGHT;
             task3_status(task, TASK3_COARSE_RING_STATUS_MOVE,
                          "task3_right_1670mm_start");
@@ -337,11 +382,12 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
                          "task3_ground_place_prepare_start");
             if (task->item_index == 0U)
             {
+                /* 只使用2号中心环校准一次底盘，随后三件放置期间保持车身不动。 */
                 adjust_result =
                     vision_fine_adjust_prepare_place_and_start_preselected(
                         task->fine_adjust,
                         task->arm,
-                        task->target_ring);
+                        TASK3_COARSE_RING_CENTER);
                 if (adjust_result != VISION_FINE_ADJUST_OK)
                 {
                     return task3_fail(task,
@@ -350,27 +396,37 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
                         TASK3_COARSE_RING_VISION_ERROR,
                         "task3_ground_place_prepare_failed");
                 }
+                task->state = TASK3_COARSE_RING_ALIGN;
+                return TASK3_COARSE_RING_OK;
             }
-            else if (vision_fine_adjust_start(
-                         task->fine_adjust,
-                         VISION_UART_MODE_TARGET_RING,
-                         task->target_ring) != VISION_FINE_ADJUST_OK)
+
+            if (arm_controller_set_target_ring(task->arm,
+                                               task->target_ring) !=
+                ARM_CONTROLLER_OK)
             {
-                /* 前一件已保持靶环放置姿态，无需重复旋转、下降。 */
                 return task3_fail(task,
-                                  TASK3_COARSE_RING_VISION_ERROR,
-                                  "task3_target_ring_mode_start_failed");
+                                  TASK3_COARSE_RING_ARM_ERROR,
+                                  "task3_set_target_ring_failed");
             }
-            task->state = TASK3_COARSE_RING_ALIGN;
+            task->state = TASK3_COARSE_RING_PLACE_ITEM;
             return TASK3_COARSE_RING_OK;
 
         case TASK3_COARSE_RING_ALIGN:
             adjust_result = vision_fine_adjust_step(task->fine_adjust);
             if (adjust_result == VISION_FINE_ADJUST_REACHED)
             {
+                if (arm_controller_set_target_ring(task->arm,
+                                                   task->target_ring) !=
+                    ARM_CONTROLLER_OK)
+                {
+                    return task3_fail(task,
+                                      TASK3_COARSE_RING_ARM_ERROR,
+                                      "task3_set_target_ring_failed");
+                }
+                (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK3_COARSE_RING_PLACE_ITEM;
                 task3_status(task, TASK3_COARSE_RING_STATUS_FINE_ADJUST,
-                             "task3_fine_adjust_done");
+                             "task3_center_ring_fine_adjust_done");
                 return TASK3_COARSE_RING_OK;
             }
             if (adjust_result == VISION_FINE_ADJUST_TIMEOUT_RESULT)
@@ -395,10 +451,6 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
             return TASK3_COARSE_RING_WAITING;
 
         case TASK3_COARSE_RING_PLACE_ITEM:
-            if (task3_set_tray_position(task) != TASK3_COARSE_RING_OK)
-            {
-                return TASK3_COARSE_RING_TRAY_ERROR;
-            }
             task3_status(task, TASK3_COARSE_RING_STATUS_PLACE,
                          "task3_pick_from_tray_and_place_start");
             if (task->item_index + 1U < QR_BATCH_ITEM_COUNT)
@@ -430,13 +482,19 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
             if (task->item_index >= QR_BATCH_ITEM_COUNT)
             {
                 /* 最后一件完成后保持最高点、面向靶环，交给任务4取料。 */
+                task3_restore_fine_adjust_config(task);
                 task->state = TASK3_COARSE_RING_DONE;
                 task3_status(task, TASK3_COARSE_RING_STATUS_DONE,
                              "task3_three_rings_done");
                 return TASK3_COARSE_RING_OK;
             }
 
-            /* 前两件保持低位、面向靶环、夹爪打开，底盘继续停在2号环。 */
+            /* 机械臂已离开料盘，立即预置下一工位。 */
+            if (task3_set_tray_position(task) != TASK3_COARSE_RING_OK)
+            {
+                return TASK3_COARSE_RING_TRAY_ERROR;
+            }
+            /* 前两件保持低位，底盘固定在已校准的2号中心环位置。 */
             task->state = TASK3_COARSE_RING_PREPARE_ITEM;
             return TASK3_COARSE_RING_OK;
 

@@ -10,6 +10,8 @@
 #define TASK5_MOVE_SETTLE_MS         400U
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK5_ROTATE_CLOCKWISE_SIGN   (-1)
+#define TASK5_TEMPORARY_RING_TOLERANCE_PIXEL       5
+#define TASK5_TEMPORARY_RING_POSITION_SETTLE_MS   40U
 
 static void task5_status(task5_temporary_ring_t *task,
                          uint8_t status,
@@ -21,6 +23,46 @@ static void task5_status(task5_temporary_ring_t *task,
     }
 }
 
+static void task5_apply_fine_adjust_config(task5_temporary_ring_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL) ||
+        (task->fine_adjust_config_saved != 0U))
+    {
+        return;
+    }
+
+    task->saved_tolerance_x_pixel =
+        task->fine_adjust->config.tolerance_x_pixel;
+    task->saved_tolerance_y_pixel =
+        task->fine_adjust->config.tolerance_y_pixel;
+    task->saved_position_settle_ms =
+        task->fine_adjust->config.position_settle_ms;
+    task->fine_adjust->config.tolerance_x_pixel =
+        TASK5_TEMPORARY_RING_TOLERANCE_PIXEL;
+    task->fine_adjust->config.tolerance_y_pixel =
+        TASK5_TEMPORARY_RING_TOLERANCE_PIXEL;
+    task->fine_adjust->config.position_settle_ms =
+        TASK5_TEMPORARY_RING_POSITION_SETTLE_MS;
+    task->fine_adjust_config_saved = 1U;
+}
+
+static void task5_restore_fine_adjust_config(task5_temporary_ring_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL) ||
+        (task->fine_adjust_config_saved == 0U))
+    {
+        return;
+    }
+
+    task->fine_adjust->config.tolerance_x_pixel =
+        task->saved_tolerance_x_pixel;
+    task->fine_adjust->config.tolerance_y_pixel =
+        task->saved_tolerance_y_pixel;
+    task->fine_adjust->config.position_settle_ms =
+        task->saved_position_settle_ms;
+    task->fine_adjust_config_saved = 0U;
+}
+
 static task5_temporary_ring_result_t task5_fail(
     task5_temporary_ring_t *task,
     task5_temporary_ring_result_t result,
@@ -29,6 +71,7 @@ static task5_temporary_ring_result_t task5_fail(
     if (task != NULL)
     {
         vision_fine_adjust_abort(task->fine_adjust);
+        task5_restore_fine_adjust_config(task);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK5_TEMPORARY_RING_FAILED;
@@ -219,7 +262,6 @@ static task5_temporary_ring_result_t task5_set_tray_position(
     {
         return TASK5_TEMPORARY_RING_TRAY_ERROR;
     }
-    HAL_Delay(TASK5_TEMPORARY_RING_TRAY_SETTLE_MS);
     return TASK5_TEMPORARY_RING_OK;
 }
 
@@ -289,8 +331,23 @@ task5_temporary_ring_result_t task5_temporary_ring_submit_qr(
         }
     }
 
+    if (vision_fine_adjust_preselect_mode(
+            task->fine_adjust,
+            VISION_UART_MODE_TARGET_RING) != VISION_FINE_ADJUST_OK)
+    {
+        return TASK5_TEMPORARY_RING_VISION_ERROR;
+    }
+    task5_apply_fine_adjust_config(task);
+
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
+    /* 跨区行驶和首次视觉校准期间预置第1工位。 */
+    if (task5_set_tray_position(task) != TASK5_TEMPORARY_RING_OK)
+    {
+        return task5_fail(task,
+                          TASK5_TEMPORARY_RING_TRAY_ERROR,
+                          "task5_tray_position_failed");
+    }
     /* 任务4结束后底盘仍停在粗加工区2号环。 */
     task->current_ring = TASK5_TEMPORARY_RING_CENTER;
     task->target_ring = TASK5_TEMPORARY_RING_CENTER;
@@ -409,38 +466,54 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
             task5_status(task,
                          TASK5_TEMPORARY_RING_STATUS_PREPARE,
                          "task5_ground_place_prepare_start");
-            /* 仅第一件需要下降；后两件沿用前一件的低位放置姿态。 */
             if (task->item_index == 0U)
             {
-                arm_result = arm_controller_prepare_ground_place_aligned(
-                    task->arm);
-                if (arm_result != ARM_CONTROLLER_OK)
+                /* 只校准暂存区2号中心环一次，随后保持车身不动。 */
+                adjust_result =
+                    vision_fine_adjust_prepare_place_and_start_preselected(
+                        task->fine_adjust,
+                        task->arm,
+                        TASK5_TEMPORARY_RING_CENTER);
+                if (adjust_result != VISION_FINE_ADJUST_OK)
                 {
                     return task5_fail(task,
-                                      TASK5_TEMPORARY_RING_ARM_ERROR,
+                        (adjust_result == VISION_FINE_ADJUST_ARM_ERROR) ?
+                        TASK5_TEMPORARY_RING_ARM_ERROR :
+                        TASK5_TEMPORARY_RING_VISION_ERROR,
                                       "task5_ground_place_prepare_failed");
                 }
+                task->state = TASK5_TEMPORARY_RING_ALIGN;
+                return TASK5_TEMPORARY_RING_OK;
             }
-            if (vision_fine_adjust_start(
-                    task->fine_adjust,
-                    VISION_UART_MODE_TARGET_RING,
-                    task->target_ring) != VISION_FINE_ADJUST_OK)
+
+            if (arm_controller_set_target_ring(task->arm,
+                                               task->target_ring) !=
+                ARM_CONTROLLER_OK)
             {
                 return task5_fail(task,
-                                  TASK5_TEMPORARY_RING_VISION_ERROR,
-                                  "task5_target_ring_mode_start_failed");
+                                  TASK5_TEMPORARY_RING_ARM_ERROR,
+                                  "task5_set_target_ring_failed");
             }
-            task->state = TASK5_TEMPORARY_RING_ALIGN;
+            task->state = TASK5_TEMPORARY_RING_PLACE_ITEM;
             return TASK5_TEMPORARY_RING_OK;
 
         case TASK5_TEMPORARY_RING_ALIGN:
             adjust_result = vision_fine_adjust_step(task->fine_adjust);
             if (adjust_result == VISION_FINE_ADJUST_REACHED)
             {
+                if (arm_controller_set_target_ring(task->arm,
+                                                   task->target_ring) !=
+                    ARM_CONTROLLER_OK)
+                {
+                    return task5_fail(task,
+                                      TASK5_TEMPORARY_RING_ARM_ERROR,
+                                      "task5_set_target_ring_failed");
+                }
+                (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK5_TEMPORARY_RING_PLACE_ITEM;
                 task5_status(task,
                              TASK5_TEMPORARY_RING_STATUS_FINE_ADJUST,
-                             "task5_fine_adjust_done");
+                             "task5_center_ring_fine_adjust_done");
                 return TASK5_TEMPORARY_RING_OK;
             }
             if (adjust_result == VISION_FINE_ADJUST_TIMEOUT_RESULT)
@@ -465,12 +538,6 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
             return TASK5_TEMPORARY_RING_WAITING;
 
         case TASK5_TEMPORARY_RING_PLACE_ITEM:
-            result = task5_set_tray_position(task);
-            if (result != TASK5_TEMPORARY_RING_OK)
-            {
-                return task5_fail(task, result,
-                                  "task5_tray_position_failed");
-            }
             task5_status(task,
                          TASK5_TEMPORARY_RING_STATUS_PLACE,
                          "task5_pick_from_tray_and_place_start");
@@ -503,11 +570,19 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
             if (task->item_index >= TASK5_TEMPORARY_RING_ITEM_COUNT)
             {
                 (void)mecanum_chassis_stop(task->chassis);
+                task5_restore_fine_adjust_config(task);
                 task->state = TASK5_TEMPORARY_RING_DONE;
                 task5_status(task,
                              TASK5_TEMPORARY_RING_STATUS_DONE,
                              "task5_three_items_placed");
                 return TASK5_TEMPORARY_RING_OK;
+            }
+            /* 机械臂已离开料盘，立即预置下一工位。 */
+            result = task5_set_tray_position(task);
+            if (result != TASK5_TEMPORARY_RING_OK)
+            {
+                return task5_fail(task, result,
+                                  "task5_tray_position_failed");
             }
             task->state = TASK5_TEMPORARY_RING_PREPARE_ITEM;
             return TASK5_TEMPORARY_RING_OK;

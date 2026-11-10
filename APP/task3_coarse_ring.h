@@ -18,7 +18,6 @@ extern "C" {
 #define TASK3_COARSE_RING_ROTATE_DEG    180U
 #define TASK3_COARSE_RING_RIGHT_MM     1670U
 #define TASK3_COARSE_RING_CENTER        2U
-#define TASK3_COARSE_RING_TRAY_SETTLE_MS 400U
 
 typedef void (*task3_coarse_ring_status_fn)(uint8_t status,
                                             const char *event);
@@ -74,10 +73,14 @@ typedef struct
     QR_TaskCode_t qr_task;
     uint32_t move_start_tick;
     uint32_t move_duration_ms;
+    int16_t saved_tolerance_x_pixel;
+    int16_t saved_tolerance_y_pixel;
+    uint16_t saved_position_settle_ms;
     uint8_t item_index;
     uint8_t current_ring;
     uint8_t target_ring;
     uint8_t task_ready;
+    uint8_t fine_adjust_config_saved;
     task3_coarse_ring_state_t state;
 } task3_coarse_ring_t;
 

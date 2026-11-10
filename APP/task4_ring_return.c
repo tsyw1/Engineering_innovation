@@ -41,19 +41,6 @@ static uint8_t task4_target_ring_for_item(
            task->qr_task.second_batch_position[item_index];
 }
 
-static uint8_t task4_target_color_for_item(
-    const task4_ring_return_t *task,
-    uint8_t item_index)
-{
-    if ((task == NULL) || (item_index >= TASK4_RING_RETURN_ITEM_COUNT))
-    {
-        return 0U;
-    }
-    return (task->use_placement_order != 0U) ?
-           task->qr_task.first_batch_color[item_index] :
-           task->qr_task.second_batch_color[item_index];
-}
-
 static task4_ring_return_result_t task4_select_target_ring(
     task4_ring_return_t *task)
 {
@@ -83,7 +70,6 @@ static task4_ring_return_result_t task4_set_tray_position(
     {
         return TASK4_RING_RETURN_TRAY_ERROR;
     }
-    HAL_Delay(TASK4_RING_RETURN_TRAY_SETTLE_MS);
     return TASK4_RING_RETURN_OK;
 }
 
@@ -158,6 +144,13 @@ task4_ring_return_result_t task4_ring_return_submit_qr(
 
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
+    /* 地面取料期间预置第1工位，任务8复用相同流程。 */
+    if (task4_set_tray_position(task) != TASK4_RING_RETURN_OK)
+    {
+        return task4_fail(task,
+                          TASK4_RING_RETURN_TRAY_ERROR,
+                          "task4_tray_position_failed");
+    }
     /* 任务3结束后底盘仍停在2号环。 */
     task->current_ring = TASK4_RING_RETURN_CENTER;
     task->target_ring = task->current_ring;
@@ -193,12 +186,6 @@ task4_ring_return_result_t task4_ring_return_step(
                 task,
                 task->item_index);
             /* 任务4按任务3的放置顺序取回，任务8可复用第二批目标顺序。 */
-            result = task4_set_tray_position(task);
-            if (result != TASK4_RING_RETURN_OK)
-            {
-                return task4_fail(task, result,
-                                  "task4_tray_position_failed");
-            }
             result = task4_select_target_ring(task);
             if (result != TASK4_RING_RETURN_OK)
             {
@@ -219,33 +206,22 @@ task4_ring_return_result_t task4_ring_return_step(
                          TASK4_RING_RETURN_STATUS_PREPARE,
                          "task4_ground_pick_prepare_start");
             if (arm_controller_set_target_ring(task->arm,
-                                               task->current_ring) !=
+                                               task->target_ring) !=
                 ARM_CONTROLLER_OK)
             {
                 return task4_fail(task,
                                   TASK4_RING_RETURN_ARM_ERROR,
                                   "task4_set_target_ring_failed");
             }
-            arm_result = arm_controller_prepare_ground_pick_aligned(
-                task->arm);
+            arm_result = arm_controller_prepare_ground_pick(task->arm);
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task4_fail(task,
                                   TASK4_RING_RETURN_ARM_ERROR,
                                   "task4_ground_pick_prepare_failed");
             }
-            if (vision_fine_adjust_start(
-                    task->fine_adjust,
-                    VISION_UART_MODE_MATERIAL,
-                    task4_target_color_for_item(task,
-                                                task->item_index)) !=
-                VISION_FINE_ADJUST_OK)
-            {
-                return task4_fail(task,
-                                  TASK4_RING_RETURN_VISION_ERROR,
-                                  "task4_material_mode_start_failed");
-            }
-            task->state = TASK4_RING_RETURN_ALIGN;
+            /* 任务4和任务8均固定底盘，按二维码环位直接取回。 */
+            task->state = TASK4_RING_RETURN_PICK_AND_RETURN;
             return TASK4_RING_RETURN_OK;
 
         case TASK4_RING_RETURN_ALIGN:
@@ -303,12 +279,30 @@ task4_ring_return_result_t task4_ring_return_step(
             task->item_index++;
             if (task->item_index >= TASK4_RING_RETURN_ITEM_COUNT)
             {
+                if ((task->use_placement_order != 0U) &&
+                    ((arm_controller_set_target_ring(
+                          task->arm,
+                          TASK4_RING_RETURN_CENTER) != ARM_CONTROLLER_OK) ||
+                     (arm_controller_face_target_ring(task->arm) !=
+                      ARM_CONTROLLER_OK)))
+                {
+                    return task4_fail(task,
+                                      TASK4_RING_RETURN_ARM_ERROR,
+                                      "task4_restore_safe_pose_failed");
+                }
                 (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK4_RING_RETURN_DONE;
                 task4_status(task,
                              TASK4_RING_RETURN_STATUS_DONE,
                              "task4_three_items_returned");
                 return TASK4_RING_RETURN_OK;
+            }
+            /* 回盘动作已结束且机械臂已离开料盘，预置下一工位。 */
+            result = task4_set_tray_position(task);
+            if (result != TASK4_RING_RETURN_OK)
+            {
+                return task4_fail(task, result,
+                                  "task4_tray_position_failed");
             }
             task->state = TASK4_RING_RETURN_MOVE_TO_ITEM;
             return TASK4_RING_RETURN_OK;

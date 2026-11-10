@@ -14,7 +14,7 @@
 
 /* 临时流程联调开关：1=跳过视觉模式发送、视觉帧等待和底盘细调，
  * 保留机械臂准备及任务状态机；恢复视觉时改为 0。 */
-#define VISION_FINE_ADJUST_BYPASS                    1U
+#define VISION_FINE_ADJUST_BYPASS                    0U
 
 typedef enum
 {
@@ -123,6 +123,13 @@ vision_fine_adjust_result_t vision_fine_adjust_prepare_pick_and_start(
 
 /* 执行平台取料准备动作后，启动物料视觉模式。 */
 vision_fine_adjust_result_t vision_fine_adjust_prepare_platform_pick_and_start(
+    vision_fine_adjust_t *adjust,
+    arm_controller_t *arm,
+    uint8_t material_color);
+
+/* 使用已提前选择的物块模式完成平台取料准备；清空旧帧但不重复发送模式命令。 */
+vision_fine_adjust_result_t
+vision_fine_adjust_prepare_platform_pick_and_start_preselected(
     vision_fine_adjust_t *adjust,
     arm_controller_t *arm,
     uint8_t material_color);

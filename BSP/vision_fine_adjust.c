@@ -141,8 +141,8 @@ void vision_fine_adjust_config_default(vision_fine_adjust_config_t *config)
     config->position_pulses_per_pixel = 0.48f;
     config->max_step_pulses = 96U;
     /* 位置由脉冲数控制，速度只保证小脉冲能够可靠执行。 */
-    config->position_speed_rpm = 60U;
-    config->position_acceleration = 220U;
+    config->position_speed_rpm = 90U;
+    config->position_acceleration = 235U;
     config->position_settle_ms = 10U;
 }
 
@@ -445,6 +445,26 @@ vision_fine_adjust_prepare_platform_pick_and_start(
     return vision_fine_adjust_start(adjust,
                                     VISION_UART_MODE_MATERIAL,
                                     material_color);
+}
+
+vision_fine_adjust_result_t
+vision_fine_adjust_prepare_platform_pick_and_start_preselected(
+    vision_fine_adjust_t *adjust,
+    arm_controller_t *arm,
+    uint8_t material_color)
+{
+    if (arm == NULL)
+    {
+        return VISION_FINE_ADJUST_INVALID_PARAM;
+    }
+    if (arm_controller_prepare_platform_pick(arm) != ARM_CONTROLLER_OK)
+    {
+        return VISION_FINE_ADJUST_ARM_ERROR;
+    }
+    return vision_fine_adjust_start_preselected(
+        adjust,
+        VISION_UART_MODE_MATERIAL,
+        material_color);
 }
 
 vision_fine_adjust_result_t vision_fine_adjust_prepare_pick_for_task(

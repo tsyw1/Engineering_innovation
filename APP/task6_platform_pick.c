@@ -266,6 +266,19 @@ task6_platform_pick_result_t task6_platform_pick_submit_qr(
             return TASK6_PLATFORM_PICK_INVALID_PARAM;
         }
     }
+    if (vision_fine_adjust_preselect_mode(
+            task->fine_adjust,
+            VISION_UART_MODE_MATERIAL) != VISION_FINE_ADJUST_OK)
+    {
+        return TASK6_PLATFORM_PICK_VISION_ERROR;
+    }
+    /* 任务5结束时料盘停在第三工位，行驶前先转回第一工位并利用行驶时间稳定。 */
+    if (material_tray_servo_set_position(
+            task->tray,
+            MATERIAL_TRAY_POSITION_1) != MATERIAL_TRAY_SERVO_OK)
+    {
+        return TASK6_PLATFORM_PICK_TRAY_ERROR;
+    }
     /* 任务5结束后底盘仍停在暂存区2号环。 */
     task->current_ring = TASK6_PLATFORM_PICK_CENTER;
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
@@ -378,7 +391,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
                          "task6_platform_prepare_pick_start");
             /* 任务 5 最后一件结束在暂存环方向；任务 6 首件必须重新
              * 完成平台方向准备，不能跳过 Z 轴转向。 */
-            if (vision_fine_adjust_prepare_platform_pick_and_start(
+            if (vision_fine_adjust_prepare_platform_pick_and_start_preselected(
                     task->fine_adjust,
                     task->arm,
                     task->qr_task.second_batch_color[task->item_index]) !=
