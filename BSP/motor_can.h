@@ -21,6 +21,8 @@
 #define MOTOR_EMM_MAX_SPEED_RPM         5000U
 #define MOTOR_FIXED_CHECKSUM            0x6BU
 #define MOTOR_BROADCAST_ADDRESS         0U
+/* Emm 固件 0x36 实时位置反馈的单位；不同于位置命令的 3200 脉冲/圈。 */
+#define MOTOR_EMM_FEEDBACK_COUNTS_PER_REV 65536UL
 
 #define MOTOR_STATE_ENABLED             (1U << 0)
 #define MOTOR_STATE_POSITION_REACHED    (1U << 1)
@@ -124,9 +126,13 @@ typedef struct
     volatile uint16_t encoder_raw;
     volatile int16_t encoder_delta;
     volatile uint8_t encoder_valid;
+    /* 保留旧字段名；其数值是 0x36 原始反馈计数，Emm 固件为 65536 计数/圈。 */
     volatile int64_t actual_position_pulse;
     volatile uint8_t position_valid;
     volatile uint32_t position_update_count;
+    /* 清零后采集的 0x36 原始值，用于兼容不同固件的实时位置零点语义。 */
+    int64_t position_feedback_zero_count;
+    uint8_t position_feedback_zero_valid;
     volatile int64_t position_error_pulse;
     volatile uint16_t bus_voltage_mv;
     volatile uint16_t bus_current_ma;

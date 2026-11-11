@@ -51,7 +51,8 @@ typedef enum
     FLOW_TEST_ARM_RING_PLACE,
     FLOW_TEST_ARM_RING_PICK,
     FLOW_TEST_ARM_PLATFORM_PICK_ALIGNED,
-    FLOW_TEST_ARM_PLATFORM_PREPOSITION
+    FLOW_TEST_ARM_PLATFORM_PREPOSITION,
+    FLOW_TEST_ARM_TRAVEL_SAFE
 } flow_test_arm_operation_t;
 
 typedef enum
@@ -142,6 +143,8 @@ static const flow_test_action_t s_flow_actions[] =
              "task5_place_item_to_temporary_ring_2"),
     FLOW_ARM(5U, FLOW_TEST_ARM_RING_PLACE, 3U, 2U,
              "task5_place_item_to_temporary_ring_3"),
+    FLOW_ARM(5U, FLOW_TEST_ARM_TRAVEL_SAFE, 0U, 0U,
+             "task5_restore_arm_travel_safe"),
 
     FLOW_LINEAR(6U, -900,    0, "task6_backward_from_ring_2_900mm"),
     FLOW_ROTATE(6U,  -90,         "task6_rotate_cw_90deg"),
@@ -409,6 +412,11 @@ static chassis_full_flow_test_result_t flow_run_arm_action(
     if (action->arm_operation == FLOW_TEST_ARM_PLATFORM_PREPOSITION)
     {
         arm_result = arm_controller_preposition_platform_z(test->arm);
+        goto arm_action_done;
+    }
+    if (action->arm_operation == FLOW_TEST_ARM_TRAVEL_SAFE)
+    {
+        arm_result = arm_controller_prepare_travel_safe(test->arm);
         goto arm_action_done;
     }
 

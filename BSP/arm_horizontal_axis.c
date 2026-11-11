@@ -196,9 +196,10 @@ arm_horizontal_axis_result_t arm_horizontal_axis_get_extension(
     {
         return ARM_HORIZONTAL_AXIS_NOT_READY;
     }
+    /* 0x36 返回 65536 反馈计数/圈，不能按位置命令的 3200 脉冲/圈换算。 */
     *extension_mm = (float)axis->motor->actual_position_pulse *
                     axis->config.travel_per_motor_rev_mm /
-                    (float)axis->config.command_pulses_per_motor_rev;
+                    (float)MOTOR_EMM_FEEDBACK_COUNTS_PER_REV;
     *extension_mm *= (float)axis->config.direction_sign;
     return ARM_HORIZONTAL_AXIS_OK;
 }

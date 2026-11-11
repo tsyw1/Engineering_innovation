@@ -193,8 +193,8 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
                          (task->start_zone == START_ZONE_2) ?
                          "task1_arm_zero_during_right_done" : "task1_arm_zero_during_left_done");
-            /* 任务 2 首次平台取料需要面向平台；这里只旋转 Z 轴，
-             * 不下降、不改变水平轴，避免任务 2 再次重复旋转。 */
+            /* 任务 2 首次平台取料需要面向平台；先确认水平轴收回 0 度，
+             * 再旋转 Z 轴且不下降，避免任务 2 再次重复旋转。 */
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
                          "task1_preposition_platform_z_start");
             if (arm_controller_preposition_platform_z(task->arm) !=

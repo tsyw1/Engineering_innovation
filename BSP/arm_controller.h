@@ -17,16 +17,20 @@
 #define ARM_CONTROLLER_LIFT_MOTOR_ID             ARM_CONTROLLER_VERTICAL_MOTOR_ID
 #define ARM_CONTROLLER_COMMAND_PULSES_PER_REV   3200UL
 #define ARM_CONTROLLER_LIFT_SPEED_RPM           5000U
-#define ARM_CONTROLLER_LIFT_ACCELERATION        200U
+#define ARM_CONTROLLER_LIFT_ACCELERATION          0U
 #define ARM_CONTROLLER_HORIZONTAL_SPEED_RPM      70U
 #define ARM_CONTROLLER_HORIZONTAL_ACCELERATION   50U
+/* 应用层复核容差不宽于 X42S 默认的 0.8 度到位窗口。 */
+#define ARM_CONTROLLER_POSITION_TOLERANCE_DEG     0.8f
+#define ARM_CONTROLLER_POSITION_CORRECTION_RETRIES 1U
 #define ARM_CONTROLLER_RELEASE_DELAY_MS          300U
 #define ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS  100U
 #define ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS   100U
 #define ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS     100U
 #define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS      200U
+#define ARM_CONTROLLER_GRIPPER_OPEN_DELAY_MS     100U
 #define ARM_CONTROLLER_PICK_POSITION_SETTLE_MS  150U
-#define ARM_CONTROLLER_TRAY_GRIP_DELAY_MS        200U
+#define ARM_CONTROLLER_TRAY_GRIP_DELAY_MS        300U
 #define ARM_CONTROLLER_PLATFORM_ALIGN_SETTLE_MS  200U
 #define ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS     300U
 #define ARM_CONTROLLER_GROUND_TRAY_WAIT_MS       100U
@@ -44,7 +48,6 @@
 /* 平台取料在原标定值基础上继续下降 50 度。 */
 #define ARM_CONTROLLER_PLATFORM_PICK_LIFT_ANGLE_DEG (-1303.5f)
 #define ARM_CONTROLLER_PLATFORM_TRAY_PLACE_LIFT_ANGLE_DEG (-180.0f)
-#define ARM_CONTROLLER_PLATFORM_TRAY_EXTENSION_ANGLE_DEG (-90.0f)
 #define ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG  (-700.4f)
 #define ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG     (-3660.6f)
 /* 地面取料在原标定值基础上继续下降 50 度。 */
@@ -58,9 +61,10 @@
 #define ARM_CONTROLLER_Z_RING_3_POSITION         700U
 
 #define ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG  0.0f
-#define ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG  (-5.6f)
+/* 原物料盘标定为 -5.6 度；按需求增加 50% 后使用绝对位置 -8.4 度。 */
+#define ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG  (-8.4f)
 #define ARM_CONTROLLER_HORIZONTAL_RING_1_ANGLE_DEG (-128.6f)
-/* 2号靶环未提供新的水平标定值，保持物料盘方向的安全伸长位置。 */
+/* 2号靶环继续使用原中心环水平标定值 -5.6 度。 */
 #define ARM_CONTROLLER_HORIZONTAL_RING_2_ANGLE_DEG (-5.6f)
 #define ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG (-118.4f)
 
@@ -146,10 +150,15 @@ arm_controller_result_t arm_controller_hold_z_position(
  */
 arm_controller_result_t arm_controller_zero(arm_controller_t *controller);
 
+/** 行车前抬升到最高点，并将水平轴绝对收回到最里侧 0 度。 */
+arm_controller_result_t arm_controller_prepare_travel_safe(
+    arm_controller_t *controller);
+
 /**
- * 从已经准备好的平台取料并放到物料盘：闭合夹爪并保持 200 ms，
- * 升降轴回到 0 度，Z 轴转到物料盘方向并等待 300 ms，
- * 5 号下降 180 度与 6 号前伸 90 度同步执行，打开夹爪后同步回位。
+ * 从已经准备好的平台取料并放到物料盘：闭合夹爪并保持 300 ms，
+ * 升降轴回到 0 度，Z 轴等待配置的运动时间后再额外稳定 300 ms，
+ * 5 号下降 180 度与 6 号轴到绝对位置 -8.4 度同步执行，
+ * 打开夹爪后，5 号轴升高且 6 号轴绝对回到 0 度。
  */
 arm_controller_result_t arm_controller_pick_and_place(
     arm_controller_t *controller);
@@ -178,7 +187,8 @@ arm_controller_result_t arm_controller_place_to_ground(
 
 /**
  * 调零结束后机械臂已位于物料盘上方，本函数不再旋转 Z 轴。
- * 打开夹爪、下降取料、闭合保持 200 ms，然后回到最高点。
+ * 在最高点打开夹爪并等待 100 ms、下降取料、闭合保持 300 ms，
+ * 然后回到最高点。
  */
 arm_controller_result_t arm_controller_pick_from_tray(
     arm_controller_t *controller);
@@ -211,15 +221,15 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
 arm_controller_result_t arm_controller_finish_place(
     arm_controller_t *controller);
 
-/** 仅将 Z 轴转到平台位置，不移动水平轴、不下降。 */
+/** 先确认水平轴收回到 0 度，再将 Z 轴转到平台位置，不下降。 */
 arm_controller_result_t arm_controller_preposition_platform_z(
     arm_controller_t *controller);
 
-/** 平台夹取准备：Z 轴转到平台位置、打开夹爪、下降到平台取料高度。 */
+/** 平台夹取准备：水平轴收回 0 度、最高点开爪等待 100 ms，再转向并下降。 */
 arm_controller_result_t arm_controller_prepare_platform_pick(
     arm_controller_t *controller);
 
-/** 已经朝向平台时的取料准备：不旋转Z轴，只打开夹爪并下降。 */
+/** 已朝向平台时的取料准备：水平轴收回 0 度，最高点开爪等待 100 ms 后下降。 */
 arm_controller_result_t arm_controller_prepare_platform_pick_aligned(
     arm_controller_t *controller);
 

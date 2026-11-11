@@ -560,6 +560,15 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
                                   TASK5_TEMPORARY_RING_ARM_ERROR,
                                   "task5_pick_from_tray_failed");
             }
+            if ((task->item_index + 1U >=
+                 TASK5_TEMPORARY_RING_ITEM_COUNT) &&
+                (arm_controller_prepare_travel_safe(task->arm) !=
+                 ARM_CONTROLLER_OK))
+            {
+                return task5_fail(task,
+                                  TASK5_TEMPORARY_RING_ARM_ERROR,
+                                  "task5_restore_travel_safe_failed");
+            }
             if (screen_record_successful_place(task->screen) != SCREEN_OK)
             {
                 return task5_fail(task,

@@ -312,6 +312,16 @@ task6_platform_pick_result_t task6_platform_pick_step(
             return TASK6_PLATFORM_PICK_WAITING;
 
         case TASK6_PLATFORM_PICK_BACKWARD_FROM_RING:
+            task6_status(task,
+                         TASK6_PLATFORM_PICK_STATUS_PREPARE,
+                         "task6_arm_travel_safe_start");
+            if (arm_controller_prepare_travel_safe(task->arm) !=
+                ARM_CONTROLLER_OK)
+            {
+                return task6_fail(task,
+                                  TASK6_PLATFORM_PICK_ARM_ERROR,
+                                  "task6_arm_travel_safe_failed");
+            }
             distance_mm = task6_backward_distance_mm(task->current_ring);
             if (distance_mm == 0U)
             {
@@ -389,8 +399,8 @@ task6_platform_pick_result_t task6_platform_pick_step(
             task6_status(task,
                          TASK6_PLATFORM_PICK_STATUS_PREPARE,
                          "task6_platform_prepare_pick_start");
-            /* 任务 5 最后一件结束在暂存环方向；任务 6 首件必须重新
-             * 完成平台方向准备，不能跳过 Z 轴转向。 */
+            /* 任务 5 最后一件结束在暂存环方向；水平轴虽已收回，
+             * 任务 6 首件仍必须完成平台方向准备，不能跳过 Z 轴转向。 */
             if (vision_fine_adjust_prepare_platform_pick_and_start_preselected(
                     task->fine_adjust,
                     task->arm,
