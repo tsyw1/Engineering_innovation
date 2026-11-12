@@ -182,7 +182,8 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
                          (task->start_zone == START_ZONE_2) ?
                          "task1_arm_zero_during_right_start" : "task1_arm_zero_during_left_start");
-            if (arm_controller_zero(task->arm) != ARM_CONTROLLER_OK)
+            if (arm_controller_zero_for_platform(task->arm) !=
+                ARM_CONTROLLER_OK)
             {
                 return task1_fail(task,
                                   TASK1_START_QR_ARM_ERROR,
@@ -193,19 +194,9 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
                          (task->start_zone == START_ZONE_2) ?
                          "task1_arm_zero_during_right_done" : "task1_arm_zero_during_left_done");
-            /* 任务 2 首次平台取料需要面向平台；先确认水平轴收回 0 度，
-             * 再旋转 Z 轴且不下降，避免任务 2 再次重复旋转。 */
+            /* 调零时已直接转到平台方向，任务 2 首件无需再次等待转向。 */
             task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
-                         "task1_preposition_platform_z_start");
-            if (arm_controller_preposition_platform_z(task->arm) !=
-                ARM_CONTROLLER_OK)
-            {
-                return task1_fail(task,
-                                  TASK1_START_QR_ARM_ERROR,
-                                  "task1_preposition_platform_z_failed");
-            }
-            task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
-                         "task1_preposition_platform_z_done");
+                         "task1_arm_zero_for_platform_done");
             task->state = TASK1_START_QR_FORWARD_QR;
             return TASK1_START_QR_OK;
 

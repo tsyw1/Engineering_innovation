@@ -10,7 +10,7 @@
 #define TASK5_MOVE_SETTLE_MS         400U
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK5_ROTATE_CLOCKWISE_SIGN   (-1)
-#define TASK5_TEMPORARY_RING_TOLERANCE_PIXEL       5
+#define TASK5_TEMPORARY_RING_TOLERANCE_PIXEL       3
 #define TASK5_TEMPORARY_RING_POSITION_SETTLE_MS   40U
 
 static void task5_status(task5_temporary_ring_t *task,

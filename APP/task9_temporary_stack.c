@@ -9,7 +9,7 @@
 #define TASK9_MOVE_ACCELERATION       240U
 #define TASK9_MOVE_SETTLE_MS         400U
 #define TASK9_ROTATE_CLOCKWISE_SIGN  (-1)
-#define TASK9_TEMPORARY_STACK_TOLERANCE_PIXEL       5
+#define TASK9_TEMPORARY_STACK_TOLERANCE_PIXEL       3
 #define TASK9_TEMPORARY_STACK_POSITION_SETTLE_MS   40U
 
 static void task9_status(task9_temporary_stack_t *task,

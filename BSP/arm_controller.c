@@ -901,6 +901,49 @@ arm_controller_result_t arm_controller_zero(arm_controller_t *controller)
         ARM_CONTROLLER_Z_TRAY_POSITION);
 }
 
+arm_controller_result_t arm_controller_zero_for_platform(
+    arm_controller_t *controller)
+{
+    arm_controller_result_t result;
+    gripper_servo_result_t gripper_result;
+
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (controller->bus == NULL))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+
+    gripper_result = gripper_servo_close(&controller->gripper);
+    if (gripper_result != GRIPPER_SERVO_OK)
+    {
+        return arm_controller_from_gripper_result(gripper_result);
+    }
+
+    result = arm_controller_move_lift_angle(
+        &controller->lift_motor,
+        ARM_CONTROLLER_ZERO_LIFT_HOME_ANGLE_DEG,
+        MOTOR_POSITION_ABSOLUTE);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+
+    if (motor_clear_position(&controller->horizontal_motor) != MOTOR_OK)
+    {
+        return ARM_CONTROLLER_MOTOR_ERROR;
+    }
+    result = arm_controller_capture_motor_feedback_zero(
+        &controller->horizontal_motor);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+
+    return arm_controller_send_z_position_and_wait(
+        controller,
+        ARM_CONTROLLER_Z_PLATFORM_POSITION);
+}
+
 arm_controller_result_t arm_controller_prepare_travel_safe(
     arm_controller_t *controller)
 {

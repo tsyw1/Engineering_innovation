@@ -9,7 +9,7 @@
 #define TASK7_MOVE_ACCELERATION       240U
 #define TASK7_MOVE_SETTLE_MS         400U
 #define TASK7_ROTATE_SIGN              1
-#define TASK7_COARSE_RING_TOLERANCE_PIXEL       5
+#define TASK7_COARSE_RING_TOLERANCE_PIXEL       3
 #define TASK7_COARSE_RING_POSITION_SETTLE_MS   40U
 
 static void task7_status(task7_coarse_ring_t *task,

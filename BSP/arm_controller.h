@@ -30,7 +30,7 @@
 #define ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS  100U
 #define ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS   100U
 #define ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS     100U
-#define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS      200U
+#define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS      100U
 #define ARM_CONTROLLER_GRIPPER_OPEN_DELAY_MS     100U
 #define ARM_CONTROLLER_PLATFORM_PICK_OPEN_DELAY_MS 300U
 #define ARM_CONTROLLER_TRAY_PICK_OPEN_DELAY_MS  150U
@@ -157,6 +157,10 @@ arm_controller_result_t arm_controller_hold_z_position(
  * 最后将 Z 轴舵机转到物料盘方向。
  */
 arm_controller_result_t arm_controller_zero(arm_controller_t *controller);
+
+/** 调零后直接将 Z 轴转到平台方向，避免先转物料盘方向再重复转向。 */
+arm_controller_result_t arm_controller_zero_for_platform(
+    arm_controller_t *controller);
 
 /** 行车前抬升到最高点，并将水平轴绝对收回到最里侧 0 度。 */
 arm_controller_result_t arm_controller_prepare_travel_safe(
