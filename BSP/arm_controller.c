@@ -8,7 +8,6 @@
 
 #include <math.h>
 
-#define ARM_CONTROLLER_POSITION_TIMEOUT_MS    30000U
 #define ARM_CONTROLLER_HOME_TIMEOUT_MS        20000U
 #define ARM_CONTROLLER_HOME_START_TIMEOUT_MS  3000U
 #define ARM_CONTROLLER_POLL_INTERVAL_MS       20U
@@ -33,6 +32,12 @@ static arm_controller_result_t arm_controller_move_lift_angle(
 static arm_controller_result_t arm_controller_move_lift_angle_timed(
     motor_t *motor,
     float angle_deg,
+    uint32_t wait_ms);
+static arm_controller_result_t arm_controller_move_motor_absolute_timed(
+    motor_t *motor,
+    float angle_deg,
+    uint16_t speed_rpm,
+    uint8_t acceleration,
     uint32_t wait_ms);
 static arm_controller_result_t arm_controller_move_horizontal_angle(
     arm_controller_t *controller,
@@ -239,102 +244,6 @@ static arm_controller_result_t arm_controller_capture_motor_feedback_zero(
     return ARM_CONTROLLER_OK;
 }
 
-static arm_controller_result_t arm_controller_read_motor_angle_deg(
-    motor_t *motor,
-    float *angle_deg)
-{
-    int64_t feedback_count;
-    int64_t relative_count;
-    arm_controller_result_t result;
-
-    if ((motor == NULL) || (angle_deg == NULL))
-    {
-        return ARM_CONTROLLER_INVALID_PARAM;
-    }
-    if (motor->position_feedback_zero_valid == 0U)
-    {
-        return ARM_CONTROLLER_NOT_READY;
-    }
-
-    result = arm_controller_read_motor_feedback_count(motor, &feedback_count);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-
-    relative_count = feedback_count - motor->position_feedback_zero_count;
-    /* Emm 的 0x36 是 65536 counts/rev，不是命令使用的 3200 pulses/rev。 */
-    *angle_deg = (float)((double)relative_count * 360.0 /
-                         (double)MOTOR_EMM_FEEDBACK_COUNTS_PER_REV);
-    return ARM_CONTROLLER_OK;
-}
-
-static arm_controller_result_t arm_controller_motor_at_angle(
-    motor_t *motor,
-    float target_angle_deg,
-    uint8_t *at_target)
-{
-    float actual_angle_deg;
-    arm_controller_result_t result;
-
-    if ((at_target == NULL) || !isfinite(target_angle_deg))
-    {
-        return ARM_CONTROLLER_INVALID_PARAM;
-    }
-
-    result = arm_controller_read_motor_angle_deg(motor, &actual_angle_deg);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-
-    *at_target = (fabsf(target_angle_deg - actual_angle_deg) <=
-                  ARM_CONTROLLER_POSITION_TOLERANCE_DEG) ? 1U : 0U;
-    return ARM_CONTROLLER_OK;
-}
-
-static arm_controller_result_t arm_controller_wait_position(motor_t *motor)
-{
-    uint32_t start_ms;
-    motor_result_t result;
-
-    if ((motor == NULL) || (motor->bus == NULL))
-    {
-        return ARM_CONTROLLER_INVALID_PARAM;
-    }
-
-    /* 给驱动器留出启动位置命令的时间，避免读到上一条命令的旧到位状态。 */
-    HAL_Delay(100U);
-    start_ms = HAL_GetTick();
-    while ((HAL_GetTick() - start_ms) < ARM_CONTROLLER_POSITION_TIMEOUT_MS)
-    {
-        result = motor_read_state(motor);
-        if (result != MOTOR_OK)
-        {
-            return arm_controller_from_motor_result(result);
-        }
-
-        HAL_Delay(ARM_CONTROLLER_POLL_INTERVAL_MS);
-
-        if ((motor->state_flags & MOTOR_STATE_STALL_PROTECTED) != 0U)
-        {
-            return ARM_CONTROLLER_MOTOR_ERROR;
-        }
-
-        if ((motor->state_flags & MOTOR_STATE_POSITION_REACHED) != 0U)
-        {
-            return ARM_CONTROLLER_OK;
-        }
-    }
-
-    /* 驱动器状态帧已经报告到位时，允许最后一次轮询恰好跨过超时边界。 */
-    if ((motor->state_flags & MOTOR_STATE_POSITION_REACHED) != 0U)
-    {
-        return ARM_CONTROLLER_OK;
-    }
-    return ARM_CONTROLLER_TIMEOUT;
-}
-
 static arm_controller_result_t
 arm_controller_move_lift_horizontal_absolute_sync(
     arm_controller_t *controller,
@@ -420,84 +329,40 @@ static arm_controller_result_t arm_controller_wait_home(motor_t *motor)
     return ARM_CONTROLLER_TIMEOUT;
 }
 
-static arm_controller_result_t arm_controller_move_motor_absolute_closed_loop(
+static arm_controller_result_t arm_controller_move_motor_absolute_timed(
     motor_t *motor,
-    float target_angle_deg,
+    float angle_deg,
     uint16_t speed_rpm,
-    uint8_t acceleration)
+    uint8_t acceleration,
+    uint32_t wait_ms)
 {
     int64_t pulse;
     motor_result_t motor_result;
-    arm_controller_result_t controller_result;
-    uint8_t at_target;
-    uint8_t attempt;
 
-    if ((motor == NULL) || (motor->bus == NULL) ||
-        !isfinite(target_angle_deg) || (speed_rpm == 0U) ||
-        (speed_rpm > MOTOR_EMM_MAX_SPEED_RPM))
+    if ((motor == NULL) || (motor->bus == NULL) || !isfinite(angle_deg) ||
+        (speed_rpm == 0U) || (speed_rpm > MOTOR_EMM_MAX_SPEED_RPM) ||
+        (wait_ms == 0U))
     {
         return ARM_CONTROLLER_INVALID_PARAM;
     }
 
-    /* 任何伸缩或升降动作前，先按新鲜的 0x36 编码位置判断是否需要修正。 */
-    controller_result = arm_controller_motor_at_angle(
-        motor,
-        target_angle_deg,
-        &at_target);
-    if (controller_result != ARM_CONTROLLER_OK)
+    /* 5 号、6 号电机采用开环策略：发送绝对位置后固定等待 500 ms，
+     * 不再轮询 0x3A 的 POSITION_REACHED 标志。 */
+    pulse = arm_controller_angle_to_pulse(angle_deg);
+    motor->state_flags &= (uint8_t)~MOTOR_STATE_POSITION_REACHED;
+    motor_result = motor_set_position(motor,
+                                      pulse,
+                                      speed_rpm,
+                                      acceleration,
+                                      MOTOR_POSITION_ABSOLUTE,
+                                      MOTOR_EXECUTE_NOW);
+    if (motor_result != MOTOR_OK)
     {
-        return controller_result;
-    }
-    if (at_target != 0U)
-    {
-        return ARM_CONTROLLER_OK;
-    }
-
-    pulse = arm_controller_angle_to_pulse(target_angle_deg);
-    for (attempt = 0U;
-         attempt <= ARM_CONTROLLER_POSITION_CORRECTION_RETRIES;
-         attempt++)
-    {
-        motor->state_flags &= (uint8_t)~MOTOR_STATE_POSITION_REACHED;
-        motor_result = motor_set_position(motor,
-                                          pulse,
-                                          speed_rpm,
-                                          acceleration,
-                                          MOTOR_POSITION_ABSOLUTE,
-                                          MOTOR_EXECUTE_NOW);
-        if (motor_result != MOTOR_OK)
-        {
-            return arm_controller_from_motor_result(motor_result);
-        }
-
-        controller_result = arm_controller_wait_position(motor);
-        if (controller_result != ARM_CONTROLLER_OK)
-        {
-            return controller_result;
-        }
-
-        /* 单轴位置命令同样优先采用驱动器到位标志。 */
-        if ((motor->state_flags & MOTOR_STATE_POSITION_REACHED) != 0U)
-        {
-            return ARM_CONTROLLER_OK;
-        }
-
-        controller_result = arm_controller_motor_at_angle(
-            motor,
-            target_angle_deg,
-            &at_target);
-        if (controller_result != ARM_CONTROLLER_OK)
-        {
-            return controller_result;
-        }
-        if (at_target != 0U)
-        {
-            return ARM_CONTROLLER_OK;
-        }
-        /* 到位标志与真实角度不一致时，按同一绝对目标有界重发。 */
+        return arm_controller_from_motor_result(motor_result);
     }
 
-    return ARM_CONTROLLER_TIMEOUT;
+    HAL_Delay(wait_ms);
+    return ARM_CONTROLLER_OK;
 }
 
 static arm_controller_result_t arm_controller_move_lift_angle(
@@ -511,11 +376,12 @@ static arm_controller_result_t arm_controller_move_lift_angle(
     }
 
     (void)mode;
-    return arm_controller_move_motor_absolute_closed_loop(
+    return arm_controller_move_motor_absolute_timed(
         motor,
         angle_deg,
         ARM_CONTROLLER_LIFT_SPEED_RPM,
-        ARM_CONTROLLER_LIFT_ACCELERATION);
+        ARM_CONTROLLER_LIFT_ACCELERATION,
+        ARM_CONTROLLER_LIFT_MOVE_WAIT_MS);
 }
 
 static arm_controller_result_t arm_controller_move_lift_angle_timed(
@@ -523,32 +389,18 @@ static arm_controller_result_t arm_controller_move_lift_angle_timed(
     float angle_deg,
     uint32_t wait_ms)
 {
-    int64_t pulse;
-    motor_result_t motor_result;
-
     if ((motor == NULL) || (motor->bus == NULL) || !isfinite(angle_deg) ||
         (wait_ms == 0U))
     {
         return ARM_CONTROLLER_INVALID_PARAM;
     }
 
-    /* 仅用于两个取料下降动作：不等待 0x36 当前位置反馈，
-     * 也不等待 0x3A 的 POSITION_REACHED，改用已标定的固定运动时间。 */
-    pulse = arm_controller_angle_to_pulse(angle_deg);
-    motor->state_flags &= (uint8_t)~MOTOR_STATE_POSITION_REACHED;
-    motor_result = motor_set_position(motor,
-                                      pulse,
-                                      ARM_CONTROLLER_LIFT_SPEED_RPM,
-                                      ARM_CONTROLLER_LIFT_ACCELERATION,
-                                      MOTOR_POSITION_ABSOLUTE,
-                                      MOTOR_EXECUTE_NOW);
-    if (motor_result != MOTOR_OK)
-    {
-        return arm_controller_from_motor_result(motor_result);
-    }
-
-    HAL_Delay(wait_ms);
-    return ARM_CONTROLLER_OK;
+    return arm_controller_move_motor_absolute_timed(
+        motor,
+        angle_deg,
+        ARM_CONTROLLER_LIFT_SPEED_RPM,
+        ARM_CONTROLLER_LIFT_ACCELERATION,
+        wait_ms);
 }
 
 static arm_controller_result_t arm_controller_move_horizontal_angle(
@@ -561,11 +413,12 @@ static arm_controller_result_t arm_controller_move_horizontal_angle(
         return ARM_CONTROLLER_INVALID_PARAM;
     }
 
-    return arm_controller_move_motor_absolute_closed_loop(
+    return arm_controller_move_motor_absolute_timed(
         &controller->horizontal_motor,
         angle_deg,
         ARM_CONTROLLER_HORIZONTAL_SPEED_RPM,
-        ARM_CONTROLLER_HORIZONTAL_ACCELERATION);
+        ARM_CONTROLLER_HORIZONTAL_ACCELERATION,
+        ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS);
 }
 
 static arm_controller_result_t arm_controller_move_z_angle(
