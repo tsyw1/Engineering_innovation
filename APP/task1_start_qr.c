@@ -72,8 +72,8 @@ static void task1_stop_and_settle(task1_start_qr_t *task)
 {
     if ((task != NULL) && (task->chassis != NULL))
     {
+        /* 闭环直线运动返回前已经确认底盘稳定停止，不再额外等待 80 ms。 */
         (void)mecanum_chassis_stop(task->chassis);
-        HAL_Delay(80U);
     }
 }
 
@@ -212,6 +212,9 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
         case TASK1_START_QR_FORWARD_QR:
             task1_status(task, TASK1_START_QR_STATUS_MOVE,
                          "task1_forward_150mm_start");
+            /* 清掉上一轮残留码，但保留本次驶向二维码过程中的新帧。 */
+            QR_ClearTask();
+            QR_ClearError();
             result = task1_move(task, TASK1_START_QR_FORWARD_QR_MM, 1, 0);
             if (result != TASK1_START_QR_OK)
             {
@@ -219,8 +222,6 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             }
             task1_wait_move_done(task);
             task1_stop_and_settle(task);
-            QR_ClearTask();
-            QR_ClearError();
             task->state = TASK1_START_QR_WAIT_QR;
             task1_status(task, TASK1_START_QR_STATUS_QR,
                          "task1_qr_receive_enabled");

@@ -370,18 +370,28 @@ static arm_controller_result_t arm_controller_move_lift_angle(
     float angle_deg,
     motor_position_mode_t mode)
 {
+    uint8_t acceleration;
+    uint32_t wait_ms;
+
     if ((motor == NULL) || (motor->bus == NULL) || !isfinite(angle_deg))
     {
         return ARM_CONTROLLER_INVALID_PARAM;
     }
 
+    /* 当前约定中负角度对应 CCW 下降，下降启用曲线加减速；上升仍为 0。 */
+    acceleration = (angle_deg < 0.0f) ?
+                   ARM_CONTROLLER_LIFT_DOWN_ACCELERATION :
+                   ARM_CONTROLLER_LIFT_ACCELERATION;
+    wait_ms = (angle_deg < 0.0f) ?
+              ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS :
+              ARM_CONTROLLER_LIFT_MOVE_WAIT_MS;
     (void)mode;
     return arm_controller_move_motor_absolute_timed(
         motor,
         angle_deg,
         ARM_CONTROLLER_LIFT_SPEED_RPM,
-        ARM_CONTROLLER_LIFT_ACCELERATION,
-        ARM_CONTROLLER_LIFT_MOVE_WAIT_MS);
+        acceleration,
+        wait_ms);
 }
 
 static arm_controller_result_t arm_controller_move_lift_angle_timed(
@@ -389,17 +399,23 @@ static arm_controller_result_t arm_controller_move_lift_angle_timed(
     float angle_deg,
     uint32_t wait_ms)
 {
+    uint8_t acceleration;
+
     if ((motor == NULL) || (motor->bus == NULL) || !isfinite(angle_deg) ||
         (wait_ms == 0U))
     {
         return ARM_CONTROLLER_INVALID_PARAM;
     }
 
+    /* 当前约定中负角度对应 CCW 下降，下降启用曲线加减速；上升仍为 0。 */
+    acceleration = (angle_deg < 0.0f) ?
+                   ARM_CONTROLLER_LIFT_DOWN_ACCELERATION :
+                   ARM_CONTROLLER_LIFT_ACCELERATION;
     return arm_controller_move_motor_absolute_timed(
         motor,
         angle_deg,
         ARM_CONTROLLER_LIFT_SPEED_RPM,
-        ARM_CONTROLLER_LIFT_ACCELERATION,
+        acceleration,
         wait_ms);
 }
 
@@ -815,23 +831,13 @@ arm_controller_result_t arm_controller_set_target_ring(
 arm_controller_result_t arm_controller_face_target_ring(
     arm_controller_t *controller)
 {
-    arm_controller_result_t result;
-
     if ((controller == NULL) || (controller->initialized == 0U) ||
         (controller->bus == NULL))
     {
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    result = arm_controller_move_lift_angle(
-        &controller->lift_motor,
-        0.0f,
-        MOTOR_POSITION_ABSOLUTE);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
-
+    /* 转向函数内部会先完成升高和水平轴回零，避免重复发送升高命令。 */
     return arm_controller_move_z_position(
         controller,
         arm_controller_target_ring_z_position(controller));
@@ -890,7 +896,7 @@ arm_controller_result_t arm_controller_zero(arm_controller_t *controller)
     }
 
     /* 垂直轴升高后只旋转 Z 轴；水平轴保持刚清零的最里侧位置。 */
-    return arm_controller_move_z_position_only(
+    return arm_controller_send_z_position_and_wait(
         controller,
         ARM_CONTROLLER_Z_TRAY_POSITION);
 }
@@ -950,8 +956,15 @@ arm_controller_result_t arm_controller_pick_and_place(
         return result;
     }
 
-    /* 保持最高点，直接转到车身物料盘方向。 */
-    result = arm_controller_move_z_position_only(
+    /* 已经升到最高点，只需回收水平轴后转到物料盘方向。 */
+    result = arm_controller_move_horizontal_angle(
+        controller,
+        ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    result = arm_controller_send_z_position_and_wait(
         controller,
         ARM_CONTROLLER_Z_TRAY_POSITION);
     if (result != ARM_CONTROLLER_OK)
@@ -1227,15 +1240,7 @@ static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 视觉对准结束时机械臂在地面放置姿态，先抬升并回到物料盘方向。 */
-    result = arm_controller_move_lift_angle(
-        &controller->lift_motor,
-        0.0f,
-        MOTOR_POSITION_ABSOLUTE);
-    if (result != ARM_CONTROLLER_OK)
-    {
-        return result;
-    }
+    /* 转向函数内部会先抬升到最高点，再回到物料盘方向。 */
     result = arm_controller_move_z_position(
         controller,
         ARM_CONTROLLER_Z_TRAY_POSITION);
@@ -1491,7 +1496,8 @@ arm_controller_result_t arm_controller_preposition_platform_z(
     {
         return result;
     }
-    return arm_controller_move_z_position_only(
+    /* 前一步已经完成升高和水平轴回零，避免重复发送并再次等待。 */
+    return arm_controller_send_z_position_and_wait(
         controller,
         ARM_CONTROLLER_Z_PLATFORM_POSITION);
 }
@@ -1513,7 +1519,7 @@ arm_controller_result_t arm_controller_prepare_platform_pick(
         return result;
     }
 
-    result = arm_controller_move_z_position_only(
+    result = arm_controller_send_z_position_and_wait(
         controller,
         ARM_CONTROLLER_Z_PLATFORM_POSITION);
     if (result != ARM_CONTROLLER_OK)
