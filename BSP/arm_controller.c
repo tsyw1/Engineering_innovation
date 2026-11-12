@@ -39,6 +39,11 @@ static arm_controller_result_t arm_controller_move_motor_absolute_timed(
     uint16_t speed_rpm,
     uint8_t acceleration,
     uint32_t wait_ms);
+static arm_controller_result_t arm_controller_command_motor_absolute(
+    motor_t *motor,
+    float angle_deg,
+    uint16_t speed_rpm,
+    uint8_t acceleration);
 static arm_controller_result_t arm_controller_move_horizontal_angle(
     arm_controller_t *controller,
     float angle_deg);
@@ -336,18 +341,42 @@ static arm_controller_result_t arm_controller_move_motor_absolute_timed(
     uint8_t acceleration,
     uint32_t wait_ms)
 {
+    arm_controller_result_t result;
+
+    if (wait_ms == 0U)
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    result = arm_controller_command_motor_absolute(motor,
+                                                   angle_deg,
+                                                   speed_rpm,
+                                                   acceleration);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+
+    HAL_Delay(wait_ms);
+    return ARM_CONTROLLER_OK;
+}
+
+static arm_controller_result_t arm_controller_command_motor_absolute(
+    motor_t *motor,
+    float angle_deg,
+    uint16_t speed_rpm,
+    uint8_t acceleration)
+{
     int64_t pulse;
     motor_result_t motor_result;
 
     if ((motor == NULL) || (motor->bus == NULL) || !isfinite(angle_deg) ||
-        (speed_rpm == 0U) || (speed_rpm > MOTOR_EMM_MAX_SPEED_RPM) ||
-        (wait_ms == 0U))
+        (speed_rpm == 0U) || (speed_rpm > MOTOR_EMM_MAX_SPEED_RPM))
     {
         return ARM_CONTROLLER_INVALID_PARAM;
     }
 
-    /* 5 号、6 号电机采用开环策略：发送绝对位置后固定等待 500 ms，
-     * 不再轮询 0x3A 的 POSITION_REACHED 标志。 */
+    /* 位置命令本身异步执行；同步动作函数在外层等待，预定位状态机则
+     * 由底盘控制周期推进，二者共用完全相同的命令参数。 */
     pulse = arm_controller_angle_to_pulse(angle_deg);
     motor->state_flags &= (uint8_t)~MOTOR_STATE_POSITION_REACHED;
     motor_result = motor_set_position(motor,
@@ -356,13 +385,7 @@ static arm_controller_result_t arm_controller_move_motor_absolute_timed(
                                       acceleration,
                                       MOTOR_POSITION_ABSOLUTE,
                                       MOTOR_EXECUTE_NOW);
-    if (motor_result != MOTOR_OK)
-    {
-        return arm_controller_from_motor_result(motor_result);
-    }
-
-    HAL_Delay(wait_ms);
-    return ARM_CONTROLLER_OK;
+    return arm_controller_from_motor_result(motor_result);
 }
 
 static arm_controller_result_t arm_controller_move_lift_angle(
@@ -632,6 +655,8 @@ arm_controller_result_t arm_controller_init(arm_controller_t *controller,
     controller->bus = bus;
     controller->initialized = 0U;
     controller->target_ring = 2U;
+    controller->preposition_state = ARM_CONTROLLER_PREPOSITION_IDLE;
+    controller->preposition_result = ARM_CONTROLLER_OK;
     result = motor_init(&controller->lift_motor,
                         bus,
                         ARM_CONTROLLER_VERTICAL_MOTOR_ID);
@@ -967,6 +992,294 @@ arm_controller_result_t arm_controller_prepare_travel_safe(
     return arm_controller_move_horizontal_angle(
         controller,
         ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG);
+}
+
+static void arm_controller_preposition_fail(
+    arm_controller_t *controller,
+    arm_controller_result_t result)
+{
+    controller->preposition_result = result;
+    controller->preposition_state = ARM_CONTROLLER_PREPOSITION_FAILED;
+}
+
+static arm_controller_result_t arm_controller_start_pick_preposition(
+    arm_controller_t *controller,
+    uint16_t z_position,
+    float horizontal_angle_deg,
+    float lift_angle_deg,
+    uint16_t gripper_wait_ms,
+    uint8_t confirm_target_horizontal,
+    uint8_t open_gripper)
+{
+    arm_controller_result_t result;
+
+    if ((controller == NULL) || (controller->initialized == 0U) ||
+        (controller->bus == NULL) ||
+        (controller->z_servo_axis.initialized == 0U) ||
+        (controller->z_servo_axis.hardware_bound == 0U) ||
+        ((open_gripper != 0U) &&
+         (controller->gripper.initialized == 0U)))
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+    if ((open_gripper != 0U) && (gripper_wait_ms == 0U))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    if ((controller->preposition_state != ARM_CONTROLLER_PREPOSITION_IDLE) &&
+        (controller->preposition_state != ARM_CONTROLLER_PREPOSITION_DONE) &&
+        (controller->preposition_state != ARM_CONTROLLER_PREPOSITION_FAILED))
+    {
+        return ARM_CONTROLLER_BUSY;
+    }
+
+    controller->preposition_z_position = z_position;
+    controller->preposition_horizontal_angle_deg = horizontal_angle_deg;
+    controller->preposition_lift_angle_deg = lift_angle_deg;
+    controller->preposition_gripper_wait_ms = gripper_wait_ms;
+    controller->preposition_confirm_target_horizontal =
+        confirm_target_horizontal;
+    controller->preposition_open_gripper = open_gripper;
+    controller->preposition_result = ARM_CONTROLLER_OK;
+
+    /* 第一条升高命令立即发出，后续步骤由底盘控制循环推进。 */
+    result = arm_controller_command_motor_absolute(
+        &controller->lift_motor,
+        ARM_CONTROLLER_ZERO_LIFT_HOME_ANGLE_DEG,
+        ARM_CONTROLLER_LIFT_SPEED_RPM,
+        ARM_CONTROLLER_LIFT_ACCELERATION);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        arm_controller_preposition_fail(controller, result);
+        return result;
+    }
+    controller->preposition_stage_tick = HAL_GetTick();
+    controller->preposition_wait_ms = ARM_CONTROLLER_LIFT_MOVE_WAIT_MS;
+    controller->preposition_state = ARM_CONTROLLER_PREPOSITION_WAIT_LIFT;
+    return ARM_CONTROLLER_OK;
+}
+
+arm_controller_result_t arm_controller_start_platform_pick_preposition(
+    arm_controller_t *controller)
+{
+    return arm_controller_start_pick_preposition(
+        controller,
+        ARM_CONTROLLER_Z_PLATFORM_POSITION,
+        ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG,
+        ARM_CONTROLLER_PICK_LIFT_ANGLE_DEG,
+        ARM_CONTROLLER_PLATFORM_PICK_OPEN_DELAY_MS,
+        0U,
+        1U);
+}
+
+arm_controller_result_t arm_controller_start_stack_pick_preposition(
+    arm_controller_t *controller)
+{
+    float horizontal_angle_deg;
+
+    if ((controller == NULL) || (controller->target_ring < 1U) ||
+        (controller->target_ring > 3U))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    horizontal_angle_deg =
+        arm_controller_target_ring_horizontal_angle(controller);
+    return arm_controller_start_pick_preposition(
+        controller,
+        arm_controller_target_ring_z_position(controller),
+        horizontal_angle_deg,
+        ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
+        ARM_CONTROLLER_GRIPPER_OPEN_DELAY_MS,
+        (horizontal_angle_deg != ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG) ?
+        1U : 0U,
+        1U);
+}
+
+arm_controller_result_t arm_controller_start_ground_place_preposition(
+    arm_controller_t *controller,
+    uint8_t target_ring)
+{
+    arm_controller_result_t result;
+
+    result = arm_controller_set_target_ring(controller, target_ring);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    return arm_controller_start_pick_preposition(
+        controller,
+        arm_controller_target_ring_z_position(controller),
+        ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG,
+        ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG,
+        0U,
+        0U,
+        0U);
+}
+
+void arm_controller_preposition_service(void *context, uint32_t now_ms)
+{
+    arm_controller_t *controller = (arm_controller_t *)context;
+    arm_controller_result_t result;
+    arm_z_servo_axis_result_t z_result;
+
+    if ((controller == NULL) ||
+        (controller->preposition_state == ARM_CONTROLLER_PREPOSITION_IDLE) ||
+        (controller->preposition_state == ARM_CONTROLLER_PREPOSITION_DONE) ||
+        (controller->preposition_state == ARM_CONTROLLER_PREPOSITION_FAILED) ||
+        ((uint32_t)(now_ms - controller->preposition_stage_tick) <
+         controller->preposition_wait_ms))
+    {
+        return;
+    }
+
+    switch (controller->preposition_state)
+    {
+        case ARM_CONTROLLER_PREPOSITION_WAIT_LIFT:
+            result = arm_controller_command_motor_absolute(
+                &controller->horizontal_motor,
+                ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG,
+                ARM_CONTROLLER_HORIZONTAL_SPEED_RPM,
+                ARM_CONTROLLER_HORIZONTAL_ACCELERATION);
+            controller->preposition_wait_ms =
+                ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS;
+            controller->preposition_state =
+                ARM_CONTROLLER_PREPOSITION_WAIT_HORIZONTAL;
+            break;
+
+        case ARM_CONTROLLER_PREPOSITION_WAIT_HORIZONTAL:
+            z_result = arm_z_servo_axis_move_to_position(
+                &controller->z_servo_axis,
+                controller->preposition_z_position);
+            result = arm_controller_from_z_servo_result(z_result);
+            controller->preposition_wait_ms =
+                controller->z_servo_axis.config.run_time_ms +
+                ARM_CONTROLLER_PLATFORM_ALIGN_SETTLE_MS;
+            controller->preposition_state = ARM_CONTROLLER_PREPOSITION_WAIT_Z;
+            break;
+
+        case ARM_CONTROLLER_PREPOSITION_WAIT_Z:
+            if (controller->preposition_confirm_target_horizontal != 0U)
+            {
+                result = arm_controller_command_motor_absolute(
+                    &controller->horizontal_motor,
+                    controller->preposition_horizontal_angle_deg,
+                    ARM_CONTROLLER_HORIZONTAL_SPEED_RPM,
+                    ARM_CONTROLLER_HORIZONTAL_ACCELERATION);
+                controller->preposition_wait_ms =
+                    ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS;
+                controller->preposition_state =
+                    ARM_CONTROLLER_PREPOSITION_WAIT_TARGET_HORIZONTAL;
+                break;
+            }
+            if (controller->preposition_open_gripper == 0U)
+            {
+                result = arm_controller_command_motor_absolute(
+                    &controller->lift_motor,
+                    controller->preposition_lift_angle_deg,
+                    ARM_CONTROLLER_LIFT_SPEED_RPM,
+                    ARM_CONTROLLER_LIFT_DOWN_ACCELERATION);
+                controller->preposition_wait_ms =
+                    ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS;
+                controller->preposition_state =
+                    ARM_CONTROLLER_PREPOSITION_WAIT_LOWER;
+                break;
+            }
+            result = arm_controller_from_gripper_result(
+                gripper_servo_open(&controller->gripper));
+            controller->preposition_wait_ms =
+                controller->preposition_gripper_wait_ms;
+            controller->preposition_state =
+                ARM_CONTROLLER_PREPOSITION_WAIT_GRIPPER;
+            break;
+
+        case ARM_CONTROLLER_PREPOSITION_WAIT_TARGET_HORIZONTAL:
+            if (controller->preposition_open_gripper == 0U)
+            {
+                result = arm_controller_command_motor_absolute(
+                    &controller->lift_motor,
+                    controller->preposition_lift_angle_deg,
+                    ARM_CONTROLLER_LIFT_SPEED_RPM,
+                    ARM_CONTROLLER_LIFT_DOWN_ACCELERATION);
+                controller->preposition_wait_ms =
+                    ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS;
+                controller->preposition_state =
+                    ARM_CONTROLLER_PREPOSITION_WAIT_LOWER;
+                break;
+            }
+            result = arm_controller_from_gripper_result(
+                gripper_servo_open(&controller->gripper));
+            controller->preposition_wait_ms =
+                controller->preposition_gripper_wait_ms;
+            controller->preposition_state =
+                ARM_CONTROLLER_PREPOSITION_WAIT_GRIPPER;
+            break;
+
+        case ARM_CONTROLLER_PREPOSITION_WAIT_GRIPPER:
+            result = arm_controller_command_motor_absolute(
+                &controller->lift_motor,
+                controller->preposition_lift_angle_deg,
+                ARM_CONTROLLER_LIFT_SPEED_RPM,
+                ARM_CONTROLLER_LIFT_DOWN_ACCELERATION);
+            controller->preposition_wait_ms =
+                ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS;
+            controller->preposition_state =
+                ARM_CONTROLLER_PREPOSITION_WAIT_LOWER;
+            break;
+
+        case ARM_CONTROLLER_PREPOSITION_WAIT_LOWER:
+            controller->preposition_result = ARM_CONTROLLER_OK;
+            controller->preposition_state = ARM_CONTROLLER_PREPOSITION_DONE;
+            return;
+
+        default:
+            arm_controller_preposition_fail(controller,
+                                            ARM_CONTROLLER_INVALID_PARAM);
+            return;
+    }
+
+    if (result != ARM_CONTROLLER_OK)
+    {
+        arm_controller_preposition_fail(controller, result);
+        return;
+    }
+    controller->preposition_stage_tick = now_ms;
+}
+
+arm_controller_result_t arm_controller_wait_preposition(
+    arm_controller_t *controller,
+    uint32_t timeout_ms)
+{
+    uint32_t start_ms;
+
+    if ((controller == NULL) || (timeout_ms == 0U))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+    if (controller->preposition_state == ARM_CONTROLLER_PREPOSITION_IDLE)
+    {
+        return ARM_CONTROLLER_NOT_READY;
+    }
+
+    start_ms = HAL_GetTick();
+    for (;;)
+    {
+        arm_controller_preposition_service(controller, HAL_GetTick());
+        if (controller->preposition_state == ARM_CONTROLLER_PREPOSITION_DONE)
+        {
+            return ARM_CONTROLLER_OK;
+        }
+        if (controller->preposition_state == ARM_CONTROLLER_PREPOSITION_FAILED)
+        {
+            return controller->preposition_result;
+        }
+        if ((uint32_t)(HAL_GetTick() - start_ms) >= timeout_ms)
+        {
+            arm_controller_preposition_fail(controller,
+                                            ARM_CONTROLLER_TIMEOUT);
+            return ARM_CONTROLLER_TIMEOUT;
+        }
+        HAL_Delay(1U);
+    }
 }
 
 arm_controller_result_t arm_controller_pick_and_place(
@@ -1988,10 +2301,11 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
     {
         return result;
     }
+    /* 三件物料均在开爪后保持低位，避免最后一件立即抬升带起物料。 */
+    HAL_Delay(ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS);
     if (lift_after_place == 0U)
     {
-        /* 已确认码垛高度可避开双层物料，松爪稳定后保持该姿态移车。 */
-        HAL_Delay(ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS);
+        /* 已确认码垛高度可避开双层物料，保持该姿态移车。 */
         return ARM_CONTROLLER_OK;
     }
     return arm_controller_move_lift_angle(

@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define TASK2_ARM_PREPOSITION_TIMEOUT_MS 3000U
+
 static void task2_status(task2_platform_pick_t *task,
                          uint8_t status,
                          const char *event)
@@ -28,6 +30,7 @@ static void task2_stop(task2_platform_pick_t *task)
     }
     if (task->chassis != NULL)
     {
+        (void)chassis_motion_set_service_callback(NULL, NULL);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
     }
@@ -168,14 +171,7 @@ static task2_platform_pick_result_t task2_start_item(
         (task->item_index == 0U) ? 0U : 1U);
     if (task->item_index == 0U)
     {
-        /* 任务 1 已将 Z 轴预置到平台位置，首件只打开夹爪并下降。 */
-        if (arm_controller_prepare_platform_pick_aligned(task->arm) !=
-            ARM_CONTROLLER_OK)
-        {
-            return task2_fail(task,
-                              TASK2_PLATFORM_PICK_ARM_ERROR,
-                              "task2_platform_prepare_pick_failed");
-        }
+        /* 首件机械臂姿态已在两段跨区行驶期间完成。 */
         adjust_result = vision_fine_adjust_start_preselected(
             task->fine_adjust,
             VISION_UART_MODE_MATERIAL,
@@ -455,6 +451,19 @@ task2_platform_pick_result_t task2_platform_pick_step(
         case TASK2_PLATFORM_PICK_FORWARD:
             task2_status(task,
                          TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
+                         "task2_arm_preposition_during_travel_start");
+            if ((chassis_motion_set_service_callback(
+                     arm_controller_preposition_service,
+                     task->arm) != CHASSIS_MOTION_OK) ||
+                (arm_controller_start_platform_pick_preposition(task->arm) !=
+                 ARM_CONTROLLER_OK))
+            {
+                return task2_fail(task,
+                                  TASK2_PLATFORM_PICK_ARM_ERROR,
+                                  "task2_arm_preposition_start_failed");
+            }
+            task2_status(task,
+                         TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
                          "task2_forward_800mm_start");
             result = task2_move(task,
                                 TASK2_PLATFORM_PICK_FORWARD_MM,
@@ -485,6 +494,15 @@ task2_platform_pick_result_t task2_platform_pick_step(
             }
             task2_wait_move_done(task);
             (void)mecanum_chassis_stop(task->chassis);
+            if (arm_controller_wait_preposition(
+                    task->arm,
+                    TASK2_ARM_PREPOSITION_TIMEOUT_MS) != ARM_CONTROLLER_OK)
+            {
+                return task2_fail(task,
+                                  TASK2_PLATFORM_PICK_ARM_ERROR,
+                                  "task2_arm_preposition_failed");
+            }
+            (void)chassis_motion_set_service_callback(NULL, NULL);
             if (vision_fine_adjust_preselect_mode(
                     task->fine_adjust,
                     VISION_UART_MODE_MATERIAL) != VISION_FINE_ADJUST_OK)

@@ -8,6 +8,7 @@
 #define TASK7_MOVE_SPEED_RPM          60U
 #define TASK7_MOVE_ACCELERATION       240U
 #define TASK7_MOVE_SETTLE_MS         400U
+#define TASK7_ARM_PREPOSITION_TIMEOUT_MS 3000U
 #define TASK7_ROTATE_SIGN              1
 #define TASK7_COARSE_RING_TOLERANCE_PIXEL       3
 #define TASK7_COARSE_RING_POSITION_SETTLE_MS   40U
@@ -71,6 +72,7 @@ static task7_coarse_ring_result_t task7_fail(
     {
         vision_fine_adjust_abort(task->fine_adjust);
         task7_restore_fine_adjust_config(task);
+        (void)chassis_motion_set_service_callback(NULL, NULL);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK7_COARSE_RING_FAILED;
@@ -375,6 +377,20 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
             return TASK7_COARSE_RING_OK;
 
         case TASK7_COARSE_RING_RIGHT:
+            if ((chassis_motion_set_service_callback(
+                     arm_controller_preposition_service,
+                     task->arm) != CHASSIS_MOTION_OK) ||
+                (arm_controller_start_ground_place_preposition(
+                     task->arm,
+                     TASK7_COARSE_RING_CENTER) != ARM_CONTROLLER_OK))
+            {
+                return task7_fail(task,
+                                  TASK7_COARSE_RING_ARM_ERROR,
+                                  "task7_arm_preposition_start_failed");
+            }
+            task7_status(task,
+                         TASK7_COARSE_RING_STATUS_PREPARE,
+                         "task7_arm_preposition_during_travel_start");
             result = task7_move_linear(task,
                                        TASK7_COARSE_RING_RIGHT_MM,
                                        0,
@@ -386,6 +402,15 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
             }
             task7_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
+            if (arm_controller_wait_preposition(
+                    task->arm,
+                    TASK7_ARM_PREPOSITION_TIMEOUT_MS) != ARM_CONTROLLER_OK)
+            {
+                return task7_fail(task,
+                                  TASK7_COARSE_RING_ARM_ERROR,
+                                  "task7_arm_preposition_failed");
+            }
+            (void)chassis_motion_set_service_callback(NULL, NULL);
             task->state = TASK7_COARSE_RING_PREPARE_ITEM;
             return TASK7_COARSE_RING_OK;
 
@@ -404,11 +429,10 @@ task7_coarse_ring_result_t task7_coarse_ring_step(
             if (task->item_index == 0U)
             {
                 /* 只校准粗加工区2号中心环一次，随后保持车身不动。 */
-                adjust_result =
-                    vision_fine_adjust_prepare_place_and_start_preselected(
-                        task->fine_adjust,
-                        task->arm,
-                        TASK7_COARSE_RING_CENTER);
+                adjust_result = vision_fine_adjust_start_preselected(
+                    task->fine_adjust,
+                    VISION_UART_MODE_TARGET_RING,
+                    TASK7_COARSE_RING_CENTER);
                 if (adjust_result != VISION_FINE_ADJUST_OK)
                 {
                     return task7_fail(task,

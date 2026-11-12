@@ -15,12 +15,22 @@ typedef struct
     mecanum_chassis_t *chassis;
     hwt101ct_t *yaw_sensor;
     heading_hold_controller_t heading;
+    chassis_motion_service_fn service_callback;
+    void *service_context;
     float target_yaw_deg;
     uint8_t initialized;
     uint8_t target_valid;
 } chassis_motion_context_t;
 
 static chassis_motion_context_t s_motion;
+
+static void motion_service_background(uint32_t now_ms)
+{
+    if (s_motion.service_callback != NULL)
+    {
+        s_motion.service_callback(s_motion.service_context, now_ms);
+    }
+}
 
 static float motion_abs(float value)
 {
@@ -167,6 +177,7 @@ static chassis_motion_result_t motion_stop_stable(void)
 
     for (;;)
     {
+        motion_service_background(HAL_GetTick());
         if (mecanum_chassis_set_velocity(s_motion.chassis,
                                          0.0f, 0.0f, 0.0f) ==
             MECANUM_MOTOR_ERROR)
@@ -295,6 +306,8 @@ static chassis_motion_result_t motion_linear(
         uint32_t now_ms = HAL_GetTick();
         float dt_s;
 
+        motion_service_background(now_ms);
+
         if ((now_ms - last_control_ms) <
             CHASSIS_ODOMETRY_CONTROL_PERIOD_MS)
         {
@@ -413,6 +426,8 @@ static chassis_motion_result_t motion_rotation(int16_t yaw_delta_deg)
         float correction_wz;
         uint32_t now_ms = HAL_GetTick();
 
+        motion_service_background(now_ms);
+
         if ((now_ms - last_control_ms) <
             CHASSIS_ODOMETRY_CONTROL_PERIOD_MS)
         {
@@ -493,6 +508,19 @@ chassis_motion_result_t chassis_motion_closed_loop_init(
     s_motion.chassis = chassis;
     s_motion.yaw_sensor = yaw_sensor;
     s_motion.initialized = 1U;
+    return CHASSIS_MOTION_OK;
+}
+
+chassis_motion_result_t chassis_motion_set_service_callback(
+    chassis_motion_service_fn callback,
+    void *context)
+{
+    if (s_motion.initialized == 0U)
+    {
+        return CHASSIS_MOTION_INVALID_PARAM;
+    }
+    s_motion.service_callback = callback;
+    s_motion.service_context = (callback != NULL) ? context : NULL;
     return CHASSIS_MOTION_OK;
 }
 

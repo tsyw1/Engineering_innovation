@@ -1,4 +1,4 @@
-#include "task9_temporary_stack.h"
+ #include "task9_temporary_stack.h"
 
 #include "chassis_motion_closed_loop.h"
 
@@ -8,6 +8,7 @@
 #define TASK9_MOVE_SPEED_RPM          60U
 #define TASK9_MOVE_ACCELERATION       240U
 #define TASK9_MOVE_SETTLE_MS         400U
+#define TASK9_ARM_PREPOSITION_TIMEOUT_MS 3000U
 #define TASK9_ROTATE_CLOCKWISE_SIGN  (-1)
 #define TASK9_TEMPORARY_STACK_TOLERANCE_PIXEL       3
 #define TASK9_TEMPORARY_STACK_POSITION_SETTLE_MS   40U
@@ -71,6 +72,7 @@ static task9_temporary_stack_result_t task9_fail(
     {
         vision_fine_adjust_abort(task->fine_adjust);
         task9_restore_fine_adjust_config(task);
+        (void)chassis_motion_set_service_callback(NULL, NULL);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK9_TEMPORARY_STACK_FAILED;
@@ -452,6 +454,22 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             return TASK9_TEMPORARY_STACK_OK;
 
         case TASK9_TEMPORARY_STACK_BACKWARD_TO_AREA:
+            if ((arm_controller_set_target_ring(
+                     task->arm,
+                     TASK9_TEMPORARY_STACK_CENTER) != ARM_CONTROLLER_OK) ||
+                (chassis_motion_set_service_callback(
+                     arm_controller_preposition_service,
+                     task->arm) != CHASSIS_MOTION_OK) ||
+                (arm_controller_start_stack_pick_preposition(task->arm) !=
+                 ARM_CONTROLLER_OK))
+            {
+                return task9_fail(task,
+                                  TASK9_TEMPORARY_STACK_ARM_ERROR,
+                                  "task9_arm_preposition_start_failed");
+            }
+            task9_status(task,
+                         TASK9_TEMPORARY_STACK_STATUS_PREPARE,
+                         "task9_arm_preposition_during_travel_start");
             task9_status(task,
                          TASK9_TEMPORARY_STACK_STATUS_MOVE,
                          "task9_backward_to_temporary_area_start");
@@ -470,6 +488,15 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
         case TASK9_TEMPORARY_STACK_WAIT_BACKWARD_TO_AREA:
             task9_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
+            if (arm_controller_wait_preposition(
+                    task->arm,
+                    TASK9_ARM_PREPOSITION_TIMEOUT_MS) != ARM_CONTROLLER_OK)
+            {
+                return task9_fail(task,
+                                  TASK9_TEMPORARY_STACK_ARM_ERROR,
+                                  "task9_arm_preposition_failed");
+            }
+            (void)chassis_motion_set_service_callback(NULL, NULL);
             task->current_ring = TASK9_TEMPORARY_STACK_CENTER;
             task->state = TASK9_TEMPORARY_STACK_PREPARE_ITEM;
             return TASK9_TEMPORARY_STACK_OK;
@@ -493,21 +520,7 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
                          "task9_stack_prepare_start");
             if (task->item_index == 0U)
             {
-                if (arm_controller_set_target_ring(
-                        task->arm,
-                        TASK9_TEMPORARY_STACK_CENTER) != ARM_CONTROLLER_OK)
-                {
-                    return task9_fail(task,
-                                      TASK9_TEMPORARY_STACK_ARM_ERROR,
-                                      "task9_set_center_ring_failed");
-                }
-                arm_result = arm_controller_prepare_stack_pick(task->arm);
-                if (arm_result != ARM_CONTROLLER_OK)
-                {
-                    return task9_fail(task,
-                                      TASK9_TEMPORARY_STACK_ARM_ERROR,
-                                      "task9_stack_prepare_failed");
-                }
+                /* 首件码垛视觉姿态已在跨区行驶期间完成。 */
                 if (task9_find_material_at_ring(
                         task,
                         TASK9_TEMPORARY_STACK_CENTER,

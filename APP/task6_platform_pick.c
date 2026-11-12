@@ -9,6 +9,7 @@
 #define TASK6_MOVE_SPEED_RPM          60U
 #define TASK6_MOVE_ACCELERATION       240U
 #define TASK6_MOVE_SETTLE_MS         400U
+#define TASK6_ARM_PREPOSITION_TIMEOUT_MS 3000U
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK6_ROTATE_CLOCKWISE_SIGN   (-1)
 
@@ -31,6 +32,7 @@ static task6_platform_pick_result_t task6_fail(
     {
         vision_fine_adjust_abort(task->fine_adjust);
         vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
+        (void)chassis_motion_set_service_callback(NULL, NULL);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK6_PLATFORM_PICK_FAILED;
@@ -379,6 +381,19 @@ task6_platform_pick_result_t task6_platform_pick_step(
 
         case TASK6_PLATFORM_PICK_BACKWARD_TO_AREA:
             task6_status(task,
+                         TASK6_PLATFORM_PICK_STATUS_PREPARE,
+                         "task6_arm_preposition_during_travel_start");
+            if ((chassis_motion_set_service_callback(
+                     arm_controller_preposition_service,
+                     task->arm) != CHASSIS_MOTION_OK) ||
+                (arm_controller_start_platform_pick_preposition(task->arm) !=
+                 ARM_CONTROLLER_OK))
+            {
+                return task6_fail(task,
+                                  TASK6_PLATFORM_PICK_ARM_ERROR,
+                                  "task6_arm_preposition_start_failed");
+            }
+            task6_status(task,
                          TASK6_PLATFORM_PICK_STATUS_MOVE,
                          "task6_backward_to_material_area_start");
             result = task6_move_linear(
@@ -397,6 +412,15 @@ task6_platform_pick_result_t task6_platform_pick_step(
         case TASK6_PLATFORM_PICK_WAIT_BACKWARD_TO_AREA:
             task6_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
+            if (arm_controller_wait_preposition(
+                    task->arm,
+                    TASK6_ARM_PREPOSITION_TIMEOUT_MS) != ARM_CONTROLLER_OK)
+            {
+                return task6_fail(task,
+                                  TASK6_PLATFORM_PICK_ARM_ERROR,
+                                  "task6_arm_preposition_failed");
+            }
+            (void)chassis_motion_set_service_callback(NULL, NULL);
             task->state = TASK6_PLATFORM_PICK_PREPARE_ITEM;
             return TASK6_PLATFORM_PICK_OK;
 
@@ -414,15 +438,13 @@ task6_platform_pick_result_t task6_platform_pick_step(
             vision_fine_adjust_set_coarse_pick(
                 task->fine_adjust,
                 (task->item_index == 0U) ? 0U : 1U);
-            /* 任务 5 最后一件结束在暂存环方向；水平轴虽已收回，
-             * 任务 6 首件仍必须完成平台方向准备，不能跳过 Z 轴转向。 */
             if (task->item_index == 0U)
             {
-                prepare_result =
-                    vision_fine_adjust_prepare_platform_pick_and_start_preselected(
-                        task->fine_adjust,
-                        task->arm,
-                        task->qr_task.second_batch_color[task->item_index]);
+                /* 首件机械臂姿态已在跨区行驶期间完成。 */
+                prepare_result = vision_fine_adjust_start_preselected(
+                    task->fine_adjust,
+                    VISION_UART_MODE_MATERIAL,
+                    task->qr_task.second_batch_color[task->item_index]);
             }
             else
             {

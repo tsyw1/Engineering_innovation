@@ -288,7 +288,7 @@ task4_ring_return_result_t task4_ring_return_step(
                              "task4_three_items_returned");
                 return TASK4_RING_RETURN_OK;
             }
-            /* 回盘动作内部已等待 100 ms，并已升高、收回水平轴；
+            /* 回盘动作内部已完成稳定等待，并已升高、收回水平轴；
              * 此时立即启动下一工位旋转，与下一件机械臂准备并行。 */
             result = task4_start_tray_position(task);
             if (result != TASK4_RING_RETURN_OK)

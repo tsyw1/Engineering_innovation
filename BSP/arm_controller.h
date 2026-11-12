@@ -96,6 +96,19 @@ typedef enum
     ARM_CONTROLLER_NOT_READY
 } arm_controller_result_t;
 
+typedef enum
+{
+    ARM_CONTROLLER_PREPOSITION_IDLE = 0,
+    ARM_CONTROLLER_PREPOSITION_WAIT_LIFT,
+    ARM_CONTROLLER_PREPOSITION_WAIT_HORIZONTAL,
+    ARM_CONTROLLER_PREPOSITION_WAIT_Z,
+    ARM_CONTROLLER_PREPOSITION_WAIT_TARGET_HORIZONTAL,
+    ARM_CONTROLLER_PREPOSITION_WAIT_GRIPPER,
+    ARM_CONTROLLER_PREPOSITION_WAIT_LOWER,
+    ARM_CONTROLLER_PREPOSITION_DONE,
+    ARM_CONTROLLER_PREPOSITION_FAILED
+} arm_controller_preposition_state_t;
+
 typedef struct
 {
     motor_bus_t *bus;
@@ -104,6 +117,16 @@ typedef struct
     arm_horizontal_axis_t horizontal_axis;
     arm_z_servo_axis_t z_servo_axis;
     gripper_servo_t gripper;
+    arm_controller_result_t preposition_result;
+    uint32_t preposition_stage_tick;
+    uint32_t preposition_wait_ms;
+    float preposition_horizontal_angle_deg;
+    float preposition_lift_angle_deg;
+    uint16_t preposition_z_position;
+    uint16_t preposition_gripper_wait_ms;
+    uint8_t preposition_confirm_target_horizontal;
+    uint8_t preposition_open_gripper;
+    arm_controller_preposition_state_t preposition_state;
     uint8_t target_ring;
     uint8_t initialized;
 } arm_controller_t;
@@ -165,6 +188,27 @@ arm_controller_result_t arm_controller_zero_for_platform(
 /** 行车前抬升到最高点，并将水平轴绝对收回到最里侧 0 度。 */
 arm_controller_result_t arm_controller_prepare_travel_safe(
     arm_controller_t *controller);
+
+/** 行驶期间开始非阻塞的平台首件取料预定位。 */
+arm_controller_result_t arm_controller_start_platform_pick_preposition(
+    arm_controller_t *controller);
+
+/** 行驶期间开始非阻塞的暂存区首件码垛预定位。 */
+arm_controller_result_t arm_controller_start_stack_pick_preposition(
+    arm_controller_t *controller);
+
+/** 行驶期间开始非阻塞的靶环视觉观察预定位；夹爪保持闭合。 */
+arm_controller_result_t arm_controller_start_ground_place_preposition(
+    arm_controller_t *controller,
+    uint8_t target_ring);
+
+/** 底盘控制周期调用；只推进一步状态，不执行阻塞等待。 */
+void arm_controller_preposition_service(void *context, uint32_t now_ms);
+
+/** 到达作业区后确认预定位完成，并仅补齐尚未完成的剩余等待。 */
+arm_controller_result_t arm_controller_wait_preposition(
+    arm_controller_t *controller,
+    uint32_t timeout_ms);
 
 /**
  * 从已经准备好的平台取料并放到物料盘：闭合夹爪并保持 500 ms，

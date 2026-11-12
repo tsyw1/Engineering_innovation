@@ -8,6 +8,7 @@
 #define TASK5_MOVE_SPEED_RPM          60U
 #define TASK5_MOVE_ACCELERATION       240U
 #define TASK5_MOVE_SETTLE_MS         400U
+#define TASK5_ARM_PREPOSITION_TIMEOUT_MS 3000U
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK5_ROTATE_CLOCKWISE_SIGN   (-1)
 #define TASK5_TEMPORARY_RING_TOLERANCE_PIXEL       3
@@ -72,6 +73,7 @@ static task5_temporary_ring_result_t task5_fail(
     {
         vision_fine_adjust_abort(task->fine_adjust);
         task5_restore_fine_adjust_config(task);
+        (void)chassis_motion_set_service_callback(NULL, NULL);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK5_TEMPORARY_RING_FAILED;
@@ -425,6 +427,20 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
             return TASK5_TEMPORARY_RING_OK;
 
         case TASK5_TEMPORARY_RING_BACKWARD_TO_AREA:
+            if ((chassis_motion_set_service_callback(
+                     arm_controller_preposition_service,
+                     task->arm) != CHASSIS_MOTION_OK) ||
+                (arm_controller_start_ground_place_preposition(
+                     task->arm,
+                     TASK5_TEMPORARY_RING_CENTER) != ARM_CONTROLLER_OK))
+            {
+                return task5_fail(task,
+                                  TASK5_TEMPORARY_RING_ARM_ERROR,
+                                  "task5_arm_preposition_start_failed");
+            }
+            task5_status(task,
+                         TASK5_TEMPORARY_RING_STATUS_PREPARE,
+                         "task5_arm_preposition_during_travel_start");
             task5_status(task,
                          TASK5_TEMPORARY_RING_STATUS_MOVE,
                          "task5_backward_to_temporary_area_start");
@@ -444,6 +460,15 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
         case TASK5_TEMPORARY_RING_WAIT_BACKWARD_TO_AREA:
             task5_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
+            if (arm_controller_wait_preposition(
+                    task->arm,
+                    TASK5_ARM_PREPOSITION_TIMEOUT_MS) != ARM_CONTROLLER_OK)
+            {
+                return task5_fail(task,
+                                  TASK5_TEMPORARY_RING_ARM_ERROR,
+                                  "task5_arm_preposition_failed");
+            }
+            (void)chassis_motion_set_service_callback(NULL, NULL);
             task->current_ring = TASK5_TEMPORARY_RING_CENTER;
             task->state = TASK5_TEMPORARY_RING_PREPARE_ITEM;
             return TASK5_TEMPORARY_RING_OK;
@@ -469,11 +494,10 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
             if (task->item_index == 0U)
             {
                 /* 只校准暂存区2号中心环一次，随后保持车身不动。 */
-                adjust_result =
-                    vision_fine_adjust_prepare_place_and_start_preselected(
-                        task->fine_adjust,
-                        task->arm,
-                        TASK5_TEMPORARY_RING_CENTER);
+                adjust_result = vision_fine_adjust_start_preselected(
+                    task->fine_adjust,
+                    VISION_UART_MODE_TARGET_RING,
+                    TASK5_TEMPORARY_RING_CENTER);
                 if (adjust_result != VISION_FINE_ADJUST_OK)
                 {
                     return task5_fail(task,
