@@ -112,13 +112,7 @@ task8_ring_return_result_t task8_ring_return_step(
         &task->implementation);
     if (implementation_state == TASK4_RING_RETURN_DONE)
     {
-        /* 任务9从物料盘最高点开始，最后一次取料后逆时针回盘。 */
-        if (arm_controller_return_to_tray_direction(
-                task->implementation.arm) != ARM_CONTROLLER_OK)
-        {
-            task->state = TASK8_RING_RETURN_FAILED;
-            return TASK8_RING_RETURN_ARM_ERROR;
-        }
+        /* 最后一件已停在最高点、水平轴0度和料盘方向，直接交给任务9。 */
         task->state = TASK8_RING_RETURN_DONE;
     }
     else if (implementation_state == TASK4_RING_RETURN_FAILED)

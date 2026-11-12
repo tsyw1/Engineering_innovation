@@ -71,7 +71,7 @@ typedef struct
     uint8_t current_ring;
     uint8_t target_ring;
     uint8_t task_ready;
-    /* 任务4按第一批放置顺序取回；任务8复用时切换为第二批目标顺序。 */
+    /* 仅选择取回顺序：任务4使用第一批，任务8使用第二批。 */
     uint8_t use_placement_order;
     task4_ring_return_state_t state;
 } task4_ring_return_t;

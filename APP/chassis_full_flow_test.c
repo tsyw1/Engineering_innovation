@@ -482,8 +482,7 @@ static chassis_full_flow_test_result_t flow_run_arm_action(
             arm_result = arm_controller_prepare_ground_pick(test->arm);
             if (arm_result == ARM_CONTROLLER_OK)
             {
-                arm_result = arm_controller_ground_pick_to_tray_and_return(
-                    test->arm);
+                arm_result = arm_controller_ground_pick_to_tray(test->arm);
             }
             break;
 

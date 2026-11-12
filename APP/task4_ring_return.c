@@ -259,9 +259,7 @@ task4_ring_return_result_t task4_ring_return_step(
             task4_status(task,
                          TASK4_RING_RETURN_STATUS_PICK,
                          "task4_ground_pick_start");
-            arm_result = (task->use_placement_order != 0U) ?
-                arm_controller_ground_pick_to_tray(task->arm) :
-                arm_controller_ground_pick_to_tray_and_return(task->arm);
+            arm_result = arm_controller_ground_pick_to_tray(task->arm);
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task4_fail(task,
