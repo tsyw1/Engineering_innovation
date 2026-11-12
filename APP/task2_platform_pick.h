@@ -18,8 +18,6 @@ extern "C" {
 #define TASK2_PLATFORM_PICK_RIGHT_MM   920U
 #define TASK2_PLATFORM_PICK_ITEM_COUNT   3U
 #define TASK2_PLATFORM_PICK_TRAY_SETTLE_MS 100U
-/* 夹爪在物料盘上方打开后，等待物料稳定再转动物料盘。 */
-#define TASK2_PLATFORM_PICK_TRAY_OPEN_SETTLE_MS 100U
 
 typedef void (*task2_platform_pick_status_fn)(uint8_t status,
                                               const char *event);

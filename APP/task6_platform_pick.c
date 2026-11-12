@@ -182,7 +182,7 @@ static uint16_t task6_backward_distance_mm(uint8_t ring)
     }
 }
 
-static task6_platform_pick_result_t task6_set_tray_position(
+static task6_platform_pick_result_t task6_start_tray_position(
     task6_platform_pick_t *task)
 {
     if ((task == NULL) || (task->tray == NULL) ||
@@ -197,8 +197,16 @@ static task6_platform_pick_result_t task6_set_tray_position(
     {
         return TASK6_PLATFORM_PICK_TRAY_ERROR;
     }
-    HAL_Delay(TASK6_PLATFORM_PICK_TRAY_SETTLE_MS);
     return TASK6_PLATFORM_PICK_OK;
+}
+
+static void task6_finish_tray_position(task6_platform_pick_t *task)
+{
+    if (task == NULL)
+    {
+        return;
+    }
+    HAL_Delay(TASK6_PLATFORM_PICK_TRAY_SETTLE_MS);
 }
 
 task6_platform_pick_result_t task6_platform_pick_init(
@@ -393,7 +401,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
             return TASK6_PLATFORM_PICK_OK;
 
         case TASK6_PLATFORM_PICK_PREPARE_ITEM:
-            result = task6_set_tray_position(task);
+            result = task6_start_tray_position(task);
             if (result != TASK6_PLATFORM_PICK_OK)
             {
                 return task6_fail(task, result,
@@ -446,6 +454,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
                                   TASK6_PLATFORM_PICK_ARM_ERROR,
                                   "task6_platform_prepare_pick_failed");
             }
+            task6_finish_tray_position(task);
             task->state = TASK6_PLATFORM_PICK_ALIGN;
             return TASK6_PLATFORM_PICK_OK;
 
@@ -509,8 +518,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
                              "task6_platform_three_items_done");
                 return TASK6_PLATFORM_PICK_OK;
             }
-            /* 夹爪打开后保持100 ms，再切换下一个物料盘工位。 */
-            HAL_Delay(TASK6_PLATFORM_PICK_TRAY_OPEN_SETTLE_MS);
+            /* 下一次准备动作会先升到最高点；物料盘旋转在准备期间启动。 */
             task->state = TASK6_PLATFORM_PICK_PREPARE_ITEM;
             return TASK6_PLATFORM_PICK_OK;
 

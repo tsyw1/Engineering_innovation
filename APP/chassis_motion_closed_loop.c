@@ -8,7 +8,7 @@
 #include <string.h>
 
 #define MOTION_DEG_TO_RAD       0.01745329251994329577f
-#define MOTION_ROTATE_SPEED_SCALE 2.0f
+#define MOTION_ROTATE_SPEED_SCALE 3.0f
 
 typedef struct
 {

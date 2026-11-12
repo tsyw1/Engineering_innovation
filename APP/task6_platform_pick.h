@@ -22,7 +22,6 @@ extern "C" {
 #define TASK6_PLATFORM_PICK_BACKWARD_RING_2_MM 900U
 #define TASK6_PLATFORM_PICK_BACKWARD_RING_3_MM 830U
 #define TASK6_PLATFORM_PICK_TRAY_SETTLE_MS 100U
-#define TASK6_PLATFORM_PICK_TRAY_OPEN_SETTLE_MS 100U
 
 typedef void (*task6_platform_pick_status_fn)(uint8_t status,
                                                const char *event);

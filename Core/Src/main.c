@@ -462,6 +462,8 @@ static uint8_t app_prepare(void)
         app_report_error("task10_init_failed");
         return 0U;
     }
+    vision_fine_adjust_set_heading_sensor(&s_fine_adjust,
+                                          &s_yaw_sensor);
 
     s_active_task_number = 0U;
     app_write_status(TASK1_START_QR_STATUS_INIT, "competition_flow_ready");

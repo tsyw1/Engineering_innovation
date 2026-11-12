@@ -1263,6 +1263,9 @@ arm_controller_result_t arm_controller_place_to_target_ring(
         return result;
     }
 
+    /* 开爪后保持低位等待物料脱离，再抬升机械臂。 */
+    HAL_Delay(ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS);
+
     /* 最后上升到最高点。 */
     return arm_controller_move_lift_angle(
         &controller->lift_motor,
@@ -1361,10 +1364,11 @@ static arm_controller_result_t arm_controller_place_ring_item_from_tray_internal
     {
         return result;
     }
+    /* 开爪后统一保持低位等待 100 ms。 */
+    HAL_Delay(ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS);
     if (lift_after_place == 0U)
     {
         /* 松爪稳定后保持低位，供移车后直接识别下一靶环。 */
-        HAL_Delay(ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS);
         return ARM_CONTROLLER_OK;
     }
     return arm_controller_move_lift_angle(
@@ -1467,6 +1471,8 @@ arm_controller_result_t arm_controller_place_stack_item_from_tray(
     {
         return result;
     }
+    /* 开爪后保持低位等待 100 ms，再抬升机械臂，避免把物料带起。 */
+    HAL_Delay(ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS);
     return arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,

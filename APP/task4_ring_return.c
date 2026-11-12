@@ -54,7 +54,7 @@ static task4_ring_return_result_t task4_select_target_ring(
     return TASK4_RING_RETURN_OK;
 }
 
-static task4_ring_return_result_t task4_set_tray_position(
+static task4_ring_return_result_t task4_start_tray_position(
     task4_ring_return_t *task)
 {
     if ((task == NULL) || (task->tray == NULL) ||
@@ -145,7 +145,7 @@ task4_ring_return_result_t task4_ring_return_submit_qr(
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
     /* 地面取料期间预置第1工位，任务8复用相同流程。 */
-    if (task4_set_tray_position(task) != TASK4_RING_RETURN_OK)
+    if (task4_start_tray_position(task) != TASK4_RING_RETURN_OK)
     {
         return task4_fail(task,
                           TASK4_RING_RETURN_TRAY_ERROR,
@@ -259,6 +259,8 @@ task4_ring_return_result_t task4_ring_return_step(
             task4_status(task,
                          TASK4_RING_RETURN_STATUS_PICK,
                          "task4_ground_pick_start");
+            /* 放盘后机械臂已升高并收回水平轴；下一件准备阶段再按目标环
+             * 安全转向，避免在物料盘旋转前串行转回靶环。 */
             arm_result = arm_controller_ground_pick_to_tray(task->arm);
             if (arm_result != ARM_CONTROLLER_OK)
             {
@@ -286,8 +288,9 @@ task4_ring_return_result_t task4_ring_return_step(
                              "task4_three_items_returned");
                 return TASK4_RING_RETURN_OK;
             }
-            /* 回盘动作已结束且机械臂已离开料盘，预置下一工位。 */
-            result = task4_set_tray_position(task);
+            /* 回盘动作内部已等待 100 ms，并已升高、收回水平轴；
+             * 此时立即启动下一工位旋转，与下一件机械臂准备并行。 */
+            result = task4_start_tray_position(task);
             if (result != TASK4_RING_RETURN_OK)
             {
                 return task4_fail(task, result,

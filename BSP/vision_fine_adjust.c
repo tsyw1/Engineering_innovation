@@ -1,5 +1,6 @@
 #include "vision_fine_adjust.h"
 
+#include <math.h>
 #include <string.h>
 
 static void vision_fine_stop(vision_fine_adjust_t *adjust)
@@ -48,6 +49,93 @@ static int32_t vision_fine_error_to_pulse(
         pulse = (int32_t)max_pulses;
     }
     return (error * (float)sign < 0.0f) ? pulse : -pulse;
+}
+
+static float vision_fine_wrap_yaw_deg(float value)
+{
+    while (value > 180.0f)
+    {
+        value -= 360.0f;
+    }
+    while (value <= -180.0f)
+    {
+        value += 360.0f;
+    }
+    return value;
+}
+
+static int32_t vision_fine_heading_pulse(
+    const vision_fine_adjust_t *adjust)
+{
+    hwt101ct_data_t yaw_data;
+    float error_deg;
+    float correction;
+    uint32_t now_ms;
+
+    if ((adjust == NULL) || (adjust->yaw_sensor == NULL) ||
+        (adjust->heading_target_valid == 0U) ||
+        (adjust->config.heading_kp_pulses_per_deg <= 0.0f) ||
+        (adjust->config.heading_max_correction_pulses == 0U) ||
+        (hwt101ct_get_data(adjust->yaw_sensor, &yaw_data) != HWT101CT_OK) ||
+        (yaw_data.yaw_valid == 0U))
+    {
+        return 0;
+    }
+
+    now_ms = HAL_GetTick();
+    if ((uint32_t)(now_ms - yaw_data.yaw_update_ms) >
+        adjust->config.heading_max_age_ms)
+    {
+        return 0;
+    }
+
+    error_deg = vision_fine_wrap_yaw_deg(adjust->heading_target_deg -
+                                         yaw_data.yaw_deg);
+    if (fabsf(error_deg) <= adjust->config.heading_tolerance_deg)
+    {
+        return 0;
+    }
+    correction = error_deg * adjust->config.heading_kp_pulses_per_deg;
+    if (correction > (float)adjust->config.heading_max_correction_pulses)
+    {
+        correction = (float)adjust->config.heading_max_correction_pulses;
+    }
+    else if (correction <
+             -(float)adjust->config.heading_max_correction_pulses)
+    {
+        correction = -(float)adjust->config.heading_max_correction_pulses;
+    }
+    if (correction >= 0.0f)
+    {
+        return (int32_t)(correction + 0.5f);
+    }
+    return (int32_t)(correction - 0.5f);
+}
+
+static void vision_fine_capture_heading(vision_fine_adjust_t *adjust)
+{
+    hwt101ct_data_t yaw_data;
+    uint32_t now_ms;
+
+    if ((adjust == NULL) || (adjust->yaw_sensor == NULL) ||
+        (hwt101ct_get_data(adjust->yaw_sensor, &yaw_data) != HWT101CT_OK) ||
+        (yaw_data.yaw_valid == 0U))
+    {
+        if (adjust != NULL)
+        {
+            adjust->heading_target_valid = 0U;
+        }
+        return;
+    }
+    now_ms = HAL_GetTick();
+    if ((uint32_t)(now_ms - yaw_data.yaw_update_ms) >
+        adjust->config.heading_max_age_ms)
+    {
+        adjust->heading_target_valid = 0U;
+        return;
+    }
+    adjust->heading_target_deg = yaw_data.yaw_deg;
+    adjust->heading_target_valid = 1U;
 }
 
 static uint8_t vision_fine_find_any_detection(
@@ -144,6 +232,14 @@ void vision_fine_adjust_config_default(vision_fine_adjust_config_t *config)
     config->position_speed_rpm = 90U;
     config->position_acceleration = 235U;
     config->position_settle_ms = 10U;
+    config->heading_tolerance_deg =
+        VISION_FINE_ADJUST_DEFAULT_HEADING_TOLERANCE_DEG;
+    config->heading_kp_pulses_per_deg =
+        VISION_FINE_ADJUST_DEFAULT_HEADING_KP_PULSES_PER_DEG;
+    config->heading_max_correction_pulses =
+        VISION_FINE_ADJUST_DEFAULT_HEADING_MAX_CORRECTION_PULSES;
+    config->heading_max_age_ms =
+        VISION_FINE_ADJUST_DEFAULT_HEADING_MAX_AGE_MS;
 }
 
 vision_fine_adjust_result_t vision_fine_adjust_init(
@@ -160,7 +256,10 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
         (config->position_pulses_per_pixel <= 0.0f) ||
         (config->max_step_pulses == 0U) ||
         (config->position_speed_rpm == 0U) ||
-        (config->position_settle_ms == 0U))
+        (config->position_settle_ms == 0U) ||
+        (config->heading_tolerance_deg < 0.0f) ||
+        (config->heading_kp_pulses_per_deg < 0.0f) ||
+        (config->heading_max_age_ms == 0U))
     {
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
@@ -171,6 +270,18 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
     adjust->state = VISION_FINE_ADJUST_IDLE;
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
     return VISION_FINE_ADJUST_OK;
+}
+
+void vision_fine_adjust_set_heading_sensor(
+    vision_fine_adjust_t *adjust,
+    hwt101ct_t *yaw_sensor)
+{
+    if (adjust == NULL)
+    {
+        return;
+    }
+    adjust->yaw_sensor = yaw_sensor;
+    adjust->heading_target_valid = 0U;
 }
 
 static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
@@ -229,6 +340,7 @@ static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
     adjust->target_id = target_id;
     adjust->start_tick = HAL_GetTick();
     adjust->last_command_tick = adjust->start_tick;
+    vision_fine_capture_heading(adjust);
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
     adjust->state = VISION_FINE_ADJUST_WAITING_FRAME;
     return VISION_FINE_ADJUST_OK;
@@ -279,11 +391,13 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     vision_detection_t detection;
     int32_t body_x_pulse;
     int32_t body_y_pulse;
+    int32_t heading_pulse;
     int32_t wheel_pulse[MECANUM_WHEEL_COUNT];
     uint32_t local_age_ms;
     vision_uart_result_t frame_result;
     mecanum_result_t chassis_result;
     uint8_t target_found;
+    uint8_t visual_aligned;
     int16_t tolerance_x_pixel;
     int16_t tolerance_y_pixel;
 #endif
@@ -371,11 +485,14 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
                                         VISION_FINE_ADJUST_REJECT_TARGET);
     }
 
-    if ((vision_fine_abs((float)detection.dx) <=
-         (float)tolerance_x_pixel) &&
-        (vision_fine_abs((float)detection.dy) <=
-         (float)tolerance_y_pixel) &&
-        (target_found != 0U))
+    visual_aligned =
+        ((vision_fine_abs((float)detection.dx) <=
+          (float)tolerance_x_pixel) &&
+         (vision_fine_abs((float)detection.dy) <=
+          (float)tolerance_y_pixel) &&
+         (target_found != 0U)) ? 1U : 0U;
+    heading_pulse = vision_fine_heading_pulse(adjust);
+    if ((visual_aligned != 0U) && (heading_pulse == 0))
     {
         vision_fine_stop(adjust);
         adjust->state = VISION_FINE_ADJUST_ALIGNED;
@@ -383,20 +500,34 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     }
 
     /* 图像 x 控制车体前后，图像 y 控制车体左右。 */
-    body_x_pulse = vision_fine_error_to_pulse(
-        detection.dx,
-        adjust->config.image_x_to_body_x_sign,
-        adjust->config.position_pulses_per_pixel,
-        adjust->config.max_step_pulses);
-    body_y_pulse = vision_fine_error_to_pulse(
-        detection.dy,
-        adjust->config.image_y_to_body_y_sign,
-        adjust->config.position_pulses_per_pixel,
-        adjust->config.max_step_pulses);
+    if (visual_aligned != 0U)
+    {
+        /* 视觉位置已对准时只修正航向，避免再次引入平移误差。 */
+        body_x_pulse = 0;
+        body_y_pulse = 0;
+    }
+    else
+    {
+        body_x_pulse = vision_fine_error_to_pulse(
+            detection.dx,
+            adjust->config.image_x_to_body_x_sign,
+            adjust->config.position_pulses_per_pixel,
+            adjust->config.max_step_pulses);
+        body_y_pulse = vision_fine_error_to_pulse(
+            detection.dy,
+            adjust->config.image_y_to_body_y_sign,
+            adjust->config.position_pulses_per_pixel,
+            adjust->config.max_step_pulses);
+    }
     wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
     wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
     wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
     wheel_pulse[MECANUM_WHEEL_RR] = body_x_pulse - body_y_pulse;
+    /* 航向误差为正时补偿逆时针旋转：左侧轮反向、右侧轮正向。 */
+    wheel_pulse[MECANUM_WHEEL_FL] -= heading_pulse;
+    wheel_pulse[MECANUM_WHEEL_FR] += heading_pulse;
+    wheel_pulse[MECANUM_WHEEL_RL] -= heading_pulse;
+    wheel_pulse[MECANUM_WHEEL_RR] += heading_pulse;
     vision_fine_limit_pulses(wheel_pulse,
                              adjust->config.max_step_pulses);
     chassis_result = mecanum_chassis_set_position_increment(
@@ -559,6 +690,7 @@ void vision_fine_adjust_abort(vision_fine_adjust_t *adjust)
     if (adjust != NULL)
     {
         vision_fine_stop(adjust);
+        adjust->heading_target_valid = 0U;
         adjust->state = VISION_FINE_ADJUST_IDLE;
     }
 }

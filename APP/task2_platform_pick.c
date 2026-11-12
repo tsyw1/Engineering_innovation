@@ -88,7 +88,7 @@ static void task2_wait_move_done(const task2_platform_pick_t *task)
     }
 }
 
-static task2_platform_pick_result_t task2_set_tray_position(
+static task2_platform_pick_result_t task2_start_tray_position(
     task2_platform_pick_t *task)
 {
     const material_tray_position_t positions[TASK2_PLATFORM_PICK_ITEM_COUNT] =
@@ -115,10 +115,32 @@ static task2_platform_pick_result_t task2_set_tray_position(
                           TASK2_PLATFORM_PICK_TRAY_ERROR,
                           "task2_tray_position_failed");
     }
+    return TASK2_PLATFORM_PICK_OK;
+}
+
+static void task2_finish_tray_position(task2_platform_pick_t *task)
+{
+    if (task == NULL)
+    {
+        return;
+    }
     HAL_Delay(TASK2_PLATFORM_PICK_TRAY_SETTLE_MS);
     task2_status(task,
                  TASK2_PLATFORM_PICK_STATUS_TRAY_POSITION,
                  "task2_tray_position_done");
+}
+
+static task2_platform_pick_result_t task2_set_tray_position(
+    task2_platform_pick_t *task)
+{
+    task2_platform_pick_result_t result;
+
+    result = task2_start_tray_position(task);
+    if (result != TASK2_PLATFORM_PICK_OK)
+    {
+        return result;
+    }
+    task2_finish_tray_position(task);
     return TASK2_PLATFORM_PICK_OK;
 }
 
@@ -315,9 +337,9 @@ static task2_platform_pick_result_t task2_step_items(
                 return TASK2_PLATFORM_PICK_OK;
             }
 
-            /* 夹爪已在物料盘上方打开，保持 100 ms 后再切换物料盘位置。 */
-            HAL_Delay(TASK2_PLATFORM_PICK_TRAY_OPEN_SETTLE_MS);
-            if (task2_set_tray_position(task) != TASK2_PLATFORM_PICK_OK)
+            /* 先启动物料盘旋转；机械臂准备函数会先升到最高点，
+             * 再收回水平轴并旋转 Z 轴，与物料盘转动并行执行。 */
+            if (task2_start_tray_position(task) != TASK2_PLATFORM_PICK_OK)
             {
                 return TASK2_PLATFORM_PICK_TRAY_ERROR;
             }
@@ -325,6 +347,7 @@ static task2_platform_pick_result_t task2_step_items(
             {
                 return TASK2_PLATFORM_PICK_ARM_ERROR;
             }
+            task2_finish_tray_position(task);
             task->item_state = TASK2_PLATFORM_PICK_ITEMS_ALIGN;
             return TASK2_PLATFORM_PICK_OK;
 

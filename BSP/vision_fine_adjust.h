@@ -3,6 +3,7 @@
 
 #include "arm_controller.h"
 #include "chassis_mecanum.h"
+#include "HWT101CT.h"
 #include "task_plan.h"
 #include "vision_uart.h"
 
@@ -15,6 +16,12 @@
 /* 平台取料后续物料的粗略容差，单位：像素。只由任务2/6临时启用。 */
 #define VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_X_PIXEL  8
 #define VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_Y_PIXEL  8
+
+/* 微调期间保持启动时航向，单位分别为度和位置脉冲/度。 */
+#define VISION_FINE_ADJUST_DEFAULT_HEADING_TOLERANCE_DEG  0.30f
+#define VISION_FINE_ADJUST_DEFAULT_HEADING_KP_PULSES_PER_DEG  0.80f
+#define VISION_FINE_ADJUST_DEFAULT_HEADING_MAX_CORRECTION_PULSES  16U
+#define VISION_FINE_ADJUST_DEFAULT_HEADING_MAX_AGE_MS  120U
 
 /* 临时流程联调开关：1=跳过视觉模式发送、视觉帧等待和底盘细调，
  * 保留机械臂准备及任务状态机；恢复视觉时改为 0。 */
@@ -74,18 +81,25 @@ typedef struct
     uint8_t position_acceleration;
     /* 两次位置脉冲之间的最小间隔，避免新命令连续打断上一条动作。 */
     uint16_t position_settle_ms;
+    float heading_tolerance_deg;
+    float heading_kp_pulses_per_deg;
+    uint8_t heading_max_correction_pulses;
+    uint32_t heading_max_age_ms;
 } vision_fine_adjust_config_t;
 
 typedef struct
 {
     vision_uart_t *vision;
     mecanum_chassis_t *chassis;
+    hwt101ct_t *yaw_sensor;
     vision_fine_adjust_config_t config;
     vision_uart_mode_t mode;
     uint8_t target_id;
     uint32_t start_tick;
     uint8_t command_active;
     uint32_t last_command_tick;
+    float heading_target_deg;
+    uint8_t heading_target_valid;
     vision_fine_adjust_reject_reason_t last_reject_reason;
     /* 1=后续物料采用粗略取料窗口，0=使用默认精调窗口。 */
     uint8_t coarse_pick_enabled;
@@ -98,6 +112,11 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
     vision_uart_t *vision,
     mecanum_chassis_t *chassis,
     const vision_fine_adjust_config_t *config);
+
+/* 设置微调期间使用的航向传感器；传入 NULL 可关闭航向矫正。 */
+void vision_fine_adjust_set_heading_sensor(
+    vision_fine_adjust_t *adjust,
+    hwt101ct_t *yaw_sensor);
 
 /* 发送模式命令并开始等待视觉帧；夹取阶段传 mode=1，放置阶段传 mode=2。 */
 vision_fine_adjust_result_t vision_fine_adjust_start(
