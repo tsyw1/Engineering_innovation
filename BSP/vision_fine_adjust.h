@@ -12,6 +12,10 @@
 #define VISION_FINE_ADJUST_DEFAULT_TOLERANCE_X_PIXEL  4
 #define VISION_FINE_ADJUST_DEFAULT_TOLERANCE_Y_PIXEL  4
 
+/* 平台取料后续物料的粗略容差，单位：像素。只由任务2/6临时启用。 */
+#define VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_X_PIXEL  80
+#define VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_Y_PIXEL  80
+
 /* 临时流程联调开关：1=跳过视觉模式发送、视觉帧等待和底盘细调，
  * 保留机械臂准备及任务状态机；恢复视觉时改为 0。 */
 #define VISION_FINE_ADJUST_BYPASS                    0U
@@ -83,6 +87,8 @@ typedef struct
     uint8_t command_active;
     uint32_t last_command_tick;
     vision_fine_adjust_reject_reason_t last_reject_reason;
+    /* 1=后续物料采用粗略取料窗口，0=使用默认精调窗口。 */
+    uint8_t coarse_pick_enabled;
     vision_fine_adjust_state_t state;
 } vision_fine_adjust_t;
 
@@ -114,6 +120,11 @@ vision_fine_adjust_result_t vision_fine_adjust_start_preselected(
  * 目标 ID 暂不匹配时仍允许使用其他有效目标校准，但不会返回已对准。 */
 vision_fine_adjust_result_t vision_fine_adjust_step(
     vision_fine_adjust_t *adjust);
+
+/* 设置平台取料的粗略窗口；关闭后恢复默认精调容差。 */
+void vision_fine_adjust_set_coarse_pick(
+    vision_fine_adjust_t *adjust,
+    uint8_t enabled);
 
 /* 执行机械臂准备动作后立即发送对应摄像头模式命令。 */
 vision_fine_adjust_result_t vision_fine_adjust_prepare_pick_and_start(

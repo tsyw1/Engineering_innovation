@@ -2,6 +2,7 @@
 
 #include "chassis_motion_closed_loop.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* 与底盘位置模式限速一致，保证直线和旋转等待时间按实际速度计算。 */
@@ -29,6 +30,7 @@ static task6_platform_pick_result_t task6_fail(
     if (task != NULL)
     {
         vision_fine_adjust_abort(task->fine_adjust);
+        vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK6_PLATFORM_PICK_FAILED;
@@ -296,6 +298,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
 {
     task6_platform_pick_result_t result;
     vision_fine_adjust_result_t adjust_result;
+    vision_fine_adjust_result_t prepare_result;
     arm_controller_result_t arm_result;
     uint16_t distance_mm;
 
@@ -399,15 +402,46 @@ task6_platform_pick_result_t task6_platform_pick_step(
             task6_status(task,
                          TASK6_PLATFORM_PICK_STATUS_PREPARE,
                          "task6_platform_prepare_pick_start");
+            /* 首件保持原有精调；第二、第三件只在偏差过大时才重新微调。 */
+            vision_fine_adjust_set_coarse_pick(
+                task->fine_adjust,
+                (task->item_index == 0U) ? 0U : 1U);
             /* 任务 5 最后一件结束在暂存环方向；水平轴虽已收回，
              * 任务 6 首件仍必须完成平台方向准备，不能跳过 Z 轴转向。 */
-            if (vision_fine_adjust_prepare_platform_pick_and_start_preselected(
-                    task->fine_adjust,
-                    task->arm,
-                    task->qr_task.second_batch_color[task->item_index]) !=
-                VISION_FINE_ADJUST_OK)
+            if (task->item_index == 0U)
             {
-                /* 第二、第三次取料恢复顺时针180度旋转。 */
+                prepare_result =
+                    vision_fine_adjust_prepare_platform_pick_and_start_preselected(
+                        task->fine_adjust,
+                        task->arm,
+                        task->qr_task.second_batch_color[task->item_index]);
+            }
+            else
+            {
+                prepare_result =
+                    vision_fine_adjust_prepare_platform_pick_and_start(
+                        task->fine_adjust,
+                        task->arm,
+                        task->qr_task.second_batch_color[task->item_index]);
+            }
+            if (prepare_result != VISION_FINE_ADJUST_OK)
+            {
+                char event[96];
+                int length;
+
+                length = snprintf(event,
+                                  sizeof(event),
+                                  "task6_item=%u,prepare_result=%u",
+                                  (unsigned int)(task->item_index + 1U),
+                                  (unsigned int)prepare_result);
+                if ((length > 0) && ((size_t)length < sizeof(event)))
+                {
+                    task6_status(task,
+                                 TASK6_PLATFORM_PICK_STATUS_ERROR,
+                                 event);
+                }
+                /* 首件使用行驶期间预选的模式；后续物料重新发送模式命令，
+                 * 确保视觉端重新发布当前物料帧。 */
                 return task6_fail(task,
                                   TASK6_PLATFORM_PICK_ARM_ERROR,
                                   "task6_platform_prepare_pick_failed");
@@ -467,6 +501,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
             if (task->item_index >= TASK6_PLATFORM_PICK_ITEM_COUNT)
             {
                 vision_fine_adjust_abort(task->fine_adjust);
+                vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
                 (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK6_PLATFORM_PICK_DONE;
                 task6_status(task,

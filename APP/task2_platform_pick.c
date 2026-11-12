@@ -24,6 +24,7 @@ static void task2_stop(task2_platform_pick_t *task)
     if (task->fine_adjust != NULL)
     {
         vision_fine_adjust_abort(task->fine_adjust);
+        vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
     }
     if (task->chassis != NULL)
     {
@@ -139,6 +140,10 @@ static task2_platform_pick_result_t task2_start_item(
     task2_status(task,
                  TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
                  "task2_platform_prepare_pick_start");
+    /* 首件保持原有精调；第二、第三件只在偏差过大时才重新微调。 */
+    vision_fine_adjust_set_coarse_pick(
+        task->fine_adjust,
+        (task->item_index == 0U) ? 0U : 1U);
     if (task->item_index == 0U)
     {
         /* 任务 1 已将 Z 轴预置到平台位置，首件只打开夹爪并下降。 */
@@ -156,14 +161,24 @@ static task2_platform_pick_result_t task2_start_item(
     }
     else
     {
-        adjust_result =
-            vision_fine_adjust_prepare_platform_pick_and_start_preselected(
-                task->fine_adjust,
-                task->arm,
-                task->target_ids[task->item_index]);
+        /* 每件物料都重新发送一次物料模式命令，确保视觉端在上一件
+         * 完成后重新开始发布当前物料帧；不能只清空旧帧后永久等待。 */
+        adjust_result = vision_fine_adjust_prepare_platform_pick_and_start(
+            task->fine_adjust,
+            task->arm,
+            task->target_ids[task->item_index]);
     }
     if (adjust_result != VISION_FINE_ADJUST_OK)
     {
+        length = snprintf(event,
+                          sizeof(event),
+                          "task2_item=%u,prepare_result=%u",
+                          (unsigned int)(task->item_index + 1U),
+                          (unsigned int)adjust_result);
+        if ((length > 0) && ((size_t)length < sizeof(event)))
+        {
+            task2_status(task, TASK2_PLATFORM_PICK_STATUS_ERROR, event);
+        }
         return task2_fail(task,
                           TASK2_PLATFORM_PICK_ARM_ERROR,
                           "task2_platform_prepare_pick_failed");
@@ -171,9 +186,11 @@ static task2_platform_pick_result_t task2_start_item(
 
     length = snprintf(event,
                       sizeof(event),
-                      "task2_item=%u,target_id=%u,fine_adjust_started",
+                      "task2_item=%u,target_id=%u,%s",
                       (unsigned int)(task->item_index + 1U),
-                      (unsigned int)task->target_ids[task->item_index]);
+                      (unsigned int)task->target_ids[task->item_index],
+                      (task->item_index == 0U) ?
+                      "fine_adjust_started" : "coarse_pick_started");
     if ((length > 0) && ((size_t)length < sizeof(event)))
     {
         task2_status(task, TASK2_PLATFORM_PICK_STATUS_FINE_ADJUST, event);
@@ -256,6 +273,20 @@ static task2_platform_pick_result_t task2_step_items(
             arm_result = arm_controller_pick_and_place(task->arm);
             if (arm_result != ARM_CONTROLLER_OK)
             {
+                char event[96];
+                int length;
+
+                length = snprintf(event,
+                                  sizeof(event),
+                                  "task2_item=%u,arm_pick_result=%u",
+                                  (unsigned int)(task->item_index + 1U),
+                                  (unsigned int)arm_result);
+                if ((length > 0) && ((size_t)length < sizeof(event)))
+                {
+                    task2_status(task,
+                                 TASK2_PLATFORM_PICK_STATUS_ERROR,
+                                 event);
+                }
                 return task2_fail(task,
                                   TASK2_PLATFORM_PICK_ARM_ERROR,
                                   "task2_platform_pick_place_failed");
@@ -276,6 +307,7 @@ static task2_platform_pick_result_t task2_step_items(
                 task->item_state = TASK2_PLATFORM_PICK_ITEMS_DONE;
                 /* 任务3还需要继续使用底盘，正常完成只停车不失能。 */
                 vision_fine_adjust_abort(task->fine_adjust);
+                vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
                 (void)mecanum_chassis_stop(task->chassis);
                 task2_status(task,
                              TASK2_PLATFORM_PICK_STATUS_DONE,

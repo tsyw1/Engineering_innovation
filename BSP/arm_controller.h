@@ -29,8 +29,13 @@
 #define ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS     100U
 #define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS      200U
 #define ARM_CONTROLLER_GRIPPER_OPEN_DELAY_MS     100U
+#define ARM_CONTROLLER_PLATFORM_PICK_OPEN_DELAY_MS 300U
+#define ARM_CONTROLLER_TRAY_PICK_OPEN_DELAY_MS  150U
 #define ARM_CONTROLLER_PICK_POSITION_SETTLE_MS  150U
-#define ARM_CONTROLLER_TRAY_GRIP_DELAY_MS        300U
+#define ARM_CONTROLLER_PICK_LIFT_MOVE_WAIT_MS   500U
+#define ARM_CONTROLLER_PLATFORM_GRIP_DELAY_MS    500U
+#define ARM_CONTROLLER_TRAY_GRIP_DELAY_MS        500U
+#define ARM_CONTROLLER_RING_HORIZONTAL_SETTLE_MS 300U
 #define ARM_CONTROLLER_PLATFORM_ALIGN_SETTLE_MS  200U
 #define ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS     300U
 #define ARM_CONTROLLER_GROUND_TRAY_WAIT_MS       100U
@@ -51,26 +56,26 @@
 #define ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG  (-700.4f)
 #define ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG     (-3660.6f)
 /* 地面取料在原标定值基础上继续下降 50 度。 */
-#define ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG (-3710.6f)
-#define ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG (-3660.6f)
+#define ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG (-3660.6f)
+#define ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG (-1750.6f)
 
-#define ARM_CONTROLLER_Z_TRAY_POSITION           3840U
+#define ARM_CONTROLLER_Z_TRAY_POSITION           3830U
 #define ARM_CONTROLLER_Z_PLATFORM_POSITION       1310U
 #define ARM_CONTROLLER_Z_RING_1_POSITION         1887U
 #define ARM_CONTROLLER_Z_RING_2_POSITION         1310U
 #define ARM_CONTROLLER_Z_RING_3_POSITION         700U
 
 #define ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG  0.0f
-/* 原物料盘标定为 -5.6 度；按需求增加 50% 后使用绝对位置 -8.4 度。 */
-#define ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG  (-8.4f)
+/* 物料盘水平轴使用新的绝对伸长位置。 */
+#define ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG  (-24.6f)
 #define ARM_CONTROLLER_HORIZONTAL_RING_1_ANGLE_DEG (-128.6f)
-/* 2号靶环继续使用原中心环水平标定值 -5.6 度。 */
-#define ARM_CONTROLLER_HORIZONTAL_RING_2_ANGLE_DEG (-5.6f)
+/* 2号靶环位于中心位置，放置时水平轴保持最里侧零位。 */
+#define ARM_CONTROLLER_HORIZONTAL_RING_2_ANGLE_DEG (0.0f)
 #define ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG (-118.4f)
 
 /* 兼容旧任务接口；旧的“相对 180 度”命令现在映射为绝对协议位置。 */
 #define ARM_CONTROLLER_ZERO_Z_ANGLE_DEG            0.0f
-#define ARM_CONTROLLER_ZERO_Z_AFTER_HOME_DEG       3840.0f
+#define ARM_CONTROLLER_ZERO_Z_AFTER_HOME_DEG       3830.0f
 #define ARM_CONTROLLER_PICK_LIFT_ANGLE_DEG         ARM_CONTROLLER_PLATFORM_PICK_LIFT_ANGLE_DEG
 #define ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG
 #define ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG  ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG
@@ -155,10 +160,10 @@ arm_controller_result_t arm_controller_prepare_travel_safe(
     arm_controller_t *controller);
 
 /**
- * 从已经准备好的平台取料并放到物料盘：闭合夹爪并保持 300 ms，
+ * 从已经准备好的平台取料并放到物料盘：闭合夹爪并保持 500 ms，
  * 升降轴回到 0 度，Z 轴等待配置的运动时间后再额外稳定 300 ms，
- * 5 号下降 180 度与 6 号轴到绝对位置 -8.4 度同步执行，
- * 打开夹爪后，5 号轴升高且 6 号轴绝对回到 0 度。
+ * 先让 5 号升降轴下降到位，再让 6 号轴到绝对位置 -28.6 度，
+ * 打开夹爪后，先让 5 号轴升高，再让 6 号轴绝对回到 0 度。
  */
 arm_controller_result_t arm_controller_pick_and_place(
     arm_controller_t *controller);
@@ -186,9 +191,8 @@ arm_controller_result_t arm_controller_place_to_ground(
     arm_controller_t *controller);
 
 /**
- * 调零结束后机械臂已位于物料盘上方，本函数不再旋转 Z 轴。
- * 在最高点打开夹爪并等待 100 ms、下降取料、闭合保持 300 ms，
- * 然后回到最高点。
+ * 先在最高点完成物料盘方向转向和水平伸长，再打开 20 度并等待 150 ms、下降取料，
+ * 闭合保持 500 ms 后回到最高点。
  */
 arm_controller_result_t arm_controller_pick_from_tray(
     arm_controller_t *controller);
@@ -225,11 +229,11 @@ arm_controller_result_t arm_controller_finish_place(
 arm_controller_result_t arm_controller_preposition_platform_z(
     arm_controller_t *controller);
 
-/** 平台夹取准备：水平轴收回 0 度、最高点开爪等待 100 ms，再转向并下降。 */
+/** 平台夹取准备：先完成收回、转向，再在最高点开爪等待 300 ms 后下降。 */
 arm_controller_result_t arm_controller_prepare_platform_pick(
     arm_controller_t *controller);
 
-/** 已朝向平台时的取料准备：水平轴收回 0 度，最高点开爪等待 100 ms 后下降。 */
+/** 已朝向平台时的取料准备：水平轴收回 0 度，最高点开爪等待 300 ms 后下降。 */
 arm_controller_result_t arm_controller_prepare_platform_pick_aligned(
     arm_controller_t *controller);
 
@@ -243,13 +247,13 @@ arm_controller_result_t arm_controller_prepare_ground_pick_aligned(
 
 /**
  * 从已经准备好的地面位置取料，放入物料盘后再转回靶环方向：
- * Z 轴到达料盘方向后等待，5 号下降与 6 号前伸同步执行，
- * 松爪稳定后两轴同步回位。
+ * Z 轴到达料盘方向后等待，先让 5 号轴下降到位，再让 6 号轴前伸，
+ * 松爪稳定后先升高 5 号轴，再收回 6 号轴。
  */
 arm_controller_result_t arm_controller_ground_pick_to_tray_and_return(
     arm_controller_t *controller);
 
-/** 地面放置准备：Z 轴顺时针 180 度、打开夹爪、下降到地面放料高度。 */
+/** 地面放置准备：水平轴保持 0 度，转到靶环方向后下降供视觉识别。 */
 arm_controller_result_t arm_controller_prepare_ground_place(
     arm_controller_t *controller);
 

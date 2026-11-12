@@ -284,6 +284,8 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     vision_uart_result_t frame_result;
     mecanum_result_t chassis_result;
     uint8_t target_found;
+    int16_t tolerance_x_pixel;
+    int16_t tolerance_y_pixel;
 #endif
 
     if ((adjust == NULL) || (adjust->vision == NULL) ||
@@ -295,6 +297,13 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     adjust->state = VISION_FINE_ADJUST_ALIGNED;
     return VISION_FINE_ADJUST_REACHED;
 #else
+    tolerance_x_pixel = adjust->config.tolerance_x_pixel;
+    tolerance_y_pixel = adjust->config.tolerance_y_pixel;
+    if (adjust->coarse_pick_enabled != 0U)
+    {
+        tolerance_x_pixel = VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_X_PIXEL;
+        tolerance_y_pixel = VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_Y_PIXEL;
+    }
     if (adjust->state == VISION_FINE_ADJUST_ALIGNED)
     {
         return VISION_FINE_ADJUST_REACHED;
@@ -363,9 +372,9 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     }
 
     if ((vision_fine_abs((float)detection.dx) <=
-         (float)adjust->config.tolerance_x_pixel) &&
+         (float)tolerance_x_pixel) &&
         (vision_fine_abs((float)detection.dy) <=
-         (float)adjust->config.tolerance_y_pixel) &&
+         (float)tolerance_y_pixel) &&
         (target_found != 0U))
     {
         vision_fine_stop(adjust);
@@ -408,6 +417,16 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     adjust->state = VISION_FINE_ADJUST_RUNNING;
     return VISION_FINE_ADJUST_OK;
 #endif
+}
+
+void vision_fine_adjust_set_coarse_pick(
+    vision_fine_adjust_t *adjust,
+    uint8_t enabled)
+{
+    if (adjust != NULL)
+    {
+        adjust->coarse_pick_enabled = (enabled != 0U) ? 1U : 0U;
+    }
 }
 
 vision_fine_adjust_result_t vision_fine_adjust_prepare_pick_and_start(

@@ -41,6 +41,7 @@
 #define APP_CAN_SETTLE_MS              200U
 #define APP_MAIN_PERIOD_MS               5U
 #define APP_POSITION_REPORT_PERIOD_MS   200U
+#define APP_RUNTIME_REPORT_PERIOD_MS    500U
 #define APP_HWT101_RATE_100HZ           0x09U
 
 static motor_bus_t s_motor_bus;
@@ -64,9 +65,17 @@ static task9_temporary_stack_t s_task9;
 static task10_return_home_t s_task10;
 static uint8_t s_active_task_number;
 static uint32_t s_last_position_report_tick;
+static uint32_t s_last_runtime_report_tick;
 static uint8_t s_chassis_ready;
+static uint8_t s_uart6_ready;
+static uint8_t s_task2_last_result;
+static char s_error_event[96];
+static char s_last_status_event[96];
+static char s_last_error_detail[96];
+static uint8_t s_last_status_value;
 
 void SystemClock_Config(void);
+static void app_report_runtime_status(void);
 
 static void app_send_text(const char *text)
 {
@@ -110,6 +119,28 @@ static void app_write_status(uint8_t status, const char *event)
     {
         task_number = app_event_task_number(event);
     }
+    if (event != NULL)
+    {
+        /* 保存最近一次状态，错误保持帧使用它而不是通用 step_failed。 */
+        (void)snprintf(s_last_status_event,
+                       sizeof(s_last_status_event),
+                       "%s",
+                       event);
+        s_last_status_value = status;
+        if (status != 255U)
+        {
+            s_last_error_detail[0] = '\0';
+        }
+        if ((status == 255U) &&
+            ((strstr(event, "task2_item=") != NULL) ||
+             (strstr(event, "task6_item=") != NULL)))
+        {
+            (void)snprintf(s_last_error_detail,
+                           sizeof(s_last_error_detail),
+                           "%s",
+                           event);
+        }
+    }
     length = snprintf(line, sizeof(line),
                       "COMPETITION,STATUS,TASK%u,VALUE=%u,%s\r\n",
                       (unsigned int)task_number, (unsigned int)status,
@@ -123,16 +154,23 @@ static void app_write_status(uint8_t status, const char *event)
 static void app_report_error(const char *event)
 {
     char line[160];
+    const char *detail;
     int length;
 
+    detail = (s_last_error_detail[0] != '\0') ?
+             s_last_error_detail :
+             ((s_last_status_event[0] != '\0') ?
+             s_last_status_event :
+             ((event != NULL) ? event : "unknown"));
     length = snprintf(line, sizeof(line),
                       "COMPETITION,ERROR,TASK%u,%s\r\n",
                       (unsigned int)s_active_task_number,
-                      (event != NULL) ? event : "unknown");
+                      detail);
     if ((length > 0) && ((size_t)length < sizeof(line)))
     {
         app_send_text(line);
     }
+    (void)snprintf(s_error_event, sizeof(s_error_event), "%s", detail);
     if (s_chassis_ready != 0U)
     {
         (void)mecanum_chassis_stop(&s_chassis);
@@ -158,6 +196,7 @@ static void app_report_chassis_position(void)
     if ((uint32_t)(now_ms - s_last_position_report_tick) <
         APP_POSITION_REPORT_PERIOD_MS)
     {
+        app_report_runtime_status();
         return;
     }
     s_last_position_report_tick = now_ms;
@@ -172,6 +211,72 @@ static void app_report_chassis_position(void)
                       (long)(velocity.vx_mps * 1000.0f),
                       (long)(velocity.vy_mps * 1000.0f),
                       (long)(velocity.wz_rad_s * 1000.0f));
+    if ((length > 0) && ((size_t)length < sizeof(line)))
+    {
+        app_send_text(line);
+    }
+    app_report_runtime_status();
+}
+
+/*
+ * USART6 运行诊断：用于区分任务状态机等待、视觉无帧和机械臂/CAN故障。
+ * 该输出只读软件状态，不会向底盘或机械臂下发任何控制命令。
+ */
+static void app_report_runtime_status(void)
+{
+    uint32_t now_ms;
+    vision_uart_diagnostics_t vision_diagnostics;
+    char line[512];
+    int length;
+
+    now_ms = HAL_GetTick();
+    if ((uint32_t)(now_ms - s_last_runtime_report_tick) <
+        APP_RUNTIME_REPORT_PERIOD_MS)
+    {
+        return;
+    }
+    s_last_runtime_report_tick = now_ms;
+
+    memset(&vision_diagnostics, 0, sizeof(vision_diagnostics));
+    vision_uart_get_diagnostics(vision_uart_get_default(),
+                                &vision_diagnostics);
+    length = snprintf(
+        line,
+        sizeof(line),
+        "COMPETITION,RUNTIME,TICK=%lu,TASK=%u,TASK2_STATE=%u,ITEM_STATE=%u,ITEM_INDEX=%u,TASK2_RESULT=%u,TARGET=%u,VISION_STATE=%u,VISION_MODE=%u,VISION_TARGET=%u,COARSE_PICK=%u,VISION_REJECT=%u,VISION_FRAMES=%lu,VISION_LINES=%lu,VISION_RX=%lu,LAST_STATUS=%u,LAST_VALID=%u,LAST_DET=%u,LAST_AGE=%lu,CHASSIS_CMD=%d/%d/%d/%d,CHASSIS_RESULT=%u,ARM_FLAGS=%u/%u,ARM_POS_VALID=%u/%u,ARM_POS_UPDATES=%lu/%lu,GRIPPER=%u\r\n",
+        (unsigned long)now_ms,
+        (unsigned int)s_active_task_number,
+        (unsigned int)s_task2.state,
+        (unsigned int)s_task2.item_state,
+        (unsigned int)s_task2.item_index,
+        (unsigned int)s_task2_last_result,
+        (unsigned int)((s_task2.item_index <
+                        TASK2_PLATFORM_PICK_ITEM_COUNT) ?
+                       s_task2.target_ids[s_task2.item_index] : 0U),
+        (unsigned int)s_fine_adjust.state,
+        (unsigned int)s_fine_adjust.mode,
+        (unsigned int)s_fine_adjust.target_id,
+        (unsigned int)s_fine_adjust.coarse_pick_enabled,
+        (unsigned int)s_fine_adjust.last_reject_reason,
+        (unsigned long)vision_diagnostics.frame_count,
+        (unsigned long)vision_diagnostics.line_count,
+        (unsigned long)vision_diagnostics.rx_byte_count,
+        (unsigned int)vision_diagnostics.last_status,
+        (unsigned int)vision_diagnostics.last_valid,
+        (unsigned int)vision_diagnostics.last_detection_count,
+        (unsigned long)vision_diagnostics.last_age_ms,
+        (int)s_chassis.target_wheel_rpm[0],
+        (int)s_chassis.target_wheel_rpm[1],
+        (int)s_chassis.target_wheel_rpm[2],
+        (int)s_chassis.target_wheel_rpm[3],
+        (unsigned int)s_chassis.last_speed_command_result,
+        (unsigned int)s_arm.lift_motor.state_flags,
+        (unsigned int)s_arm.horizontal_motor.state_flags,
+        (unsigned int)s_arm.lift_motor.position_valid,
+        (unsigned int)s_arm.horizontal_motor.position_valid,
+        (unsigned long)s_arm.lift_motor.position_update_count,
+        (unsigned long)s_arm.horizontal_motor.position_update_count,
+        (unsigned int)s_arm.gripper.state);
     if ((length > 0) && ((size_t)length < sizeof(line)))
     {
         app_send_text(line);
@@ -392,6 +497,7 @@ int main(void)
     MX_USART3_UART_Init();
     MX_UART5_Init();
     MX_USART6_UART_Init();
+    s_uart6_ready = 1U;
     MX_CAN1_Init();
 
     if (app_prepare() == 0U)
@@ -451,7 +557,8 @@ int main(void)
         if (task2_submitted != 0U)
         {
             s_active_task_number = 2U;
-            (void)task2_platform_pick_step(&s_task2);
+            s_task2_last_result =
+                (uint8_t)task2_platform_pick_step(&s_task2);
             if (task2_platform_pick_get_state(&s_task2) ==
                 TASK2_PLATFORM_PICK_FAILED)
             {
@@ -684,9 +791,32 @@ void SystemClock_Config(void)
 
 void Error_Handler(void)
 {
-  __disable_irq();
   while (1)
   {
+    if (s_uart6_ready != 0U)
+    {
+      char line[256];
+      int length = snprintf(line,
+                            sizeof(line),
+                            "COMPETITION,ERROR,HOLD,TASK=%u,DETAIL=%s,STATUS=%u,ITEM=%u,ITEM_STATE=%u,RESULT=%u,VISION_STATE=%u,VISION_REJECT=%u,ARM_FLAGS=%u/%u,GRIPPER=%u\r\n",
+                            (unsigned int)s_active_task_number,
+                            (s_error_event[0] != '\0') ? s_error_event :
+                            "unknown",
+                            (unsigned int)s_last_status_value,
+                            (unsigned int)s_task2.item_index,
+                            (unsigned int)s_task2.item_state,
+                            (unsigned int)s_task2_last_result,
+                            (unsigned int)s_fine_adjust.state,
+                            (unsigned int)s_fine_adjust.last_reject_reason,
+                            (unsigned int)s_arm.lift_motor.state_flags,
+                            (unsigned int)s_arm.horizontal_motor.state_flags,
+                            (unsigned int)s_arm.gripper.state);
+      if ((length > 0) && ((size_t)length < sizeof(line)))
+      {
+        app_send_text(line);
+      }
+    }
+    HAL_Delay(500U);
   }
 }
 
