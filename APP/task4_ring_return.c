@@ -259,8 +259,9 @@ task4_ring_return_result_t task4_ring_return_step(
             task4_status(task,
                          TASK4_RING_RETURN_STATUS_PICK,
                          "task4_ground_pick_start");
-            arm_result = arm_controller_ground_pick_to_tray_and_return(
-                task->arm);
+            arm_result = (task->use_placement_order != 0U) ?
+                arm_controller_ground_pick_to_tray(task->arm) :
+                arm_controller_ground_pick_to_tray_and_return(task->arm);
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task4_fail(task,
@@ -279,17 +280,7 @@ task4_ring_return_result_t task4_ring_return_step(
             task->item_index++;
             if (task->item_index >= TASK4_RING_RETURN_ITEM_COUNT)
             {
-                if ((task->use_placement_order != 0U) &&
-                    ((arm_controller_set_target_ring(
-                          task->arm,
-                          TASK4_RING_RETURN_CENTER) != ARM_CONTROLLER_OK) ||
-                     (arm_controller_face_target_ring(task->arm) !=
-                      ARM_CONTROLLER_OK)))
-                {
-                    return task4_fail(task,
-                                      TASK4_RING_RETURN_ARM_ERROR,
-                                      "task4_restore_safe_pose_failed");
-                }
+                /* 最后一件同样保持最高点、水平轴0度，不再转向中心环。 */
                 (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK4_RING_RETURN_DONE;
                 task4_status(task,

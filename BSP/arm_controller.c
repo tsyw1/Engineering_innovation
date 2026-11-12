@@ -1673,8 +1673,9 @@ arm_controller_result_t arm_controller_prepare_ground_pick_aligned(
     return result;
 }
 
-arm_controller_result_t arm_controller_ground_pick_to_tray_and_return(
-    arm_controller_t *controller)
+static arm_controller_result_t arm_controller_ground_pick_to_tray_internal(
+    arm_controller_t *controller,
+    uint8_t return_to_ring)
 {
     arm_controller_result_t result;
     gripper_servo_result_t gripper_result;
@@ -1718,14 +1719,22 @@ arm_controller_result_t arm_controller_ground_pick_to_tray_and_return(
     }
     HAL_Delay(ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS);
 
-    /* 松爪稳定后，先让 5 号上升到位，再让 6 号保持物料盘绝对标定位置。 */
+    /* 松爪稳定后，先让 5 号上升到最高点。任务4在此结束并让6号轴
+     * 收回0度；旧调用者仍可选择恢复原有的返回靶环动作。 */
     result = arm_controller_move_lift_horizontal_absolute_sync(
         controller,
         0.0f,
-        ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG);
+        (return_to_ring != 0U) ?
+        ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG :
+        ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG);
     if (result != ARM_CONTROLLER_OK)
     {
         return result;
+    }
+
+    if (return_to_ring == 0U)
+    {
+        return ARM_CONTROLLER_OK;
     }
 
     /* 保持最高点，转回当前目标环方向。 */
@@ -1733,6 +1742,18 @@ arm_controller_result_t arm_controller_ground_pick_to_tray_and_return(
         controller,
         -ARM_CONTROLLER_PLACE_Z_ANGLE_DEG,
         MOTOR_POSITION_RELATIVE_CURRENT);
+}
+
+arm_controller_result_t arm_controller_ground_pick_to_tray(
+    arm_controller_t *controller)
+{
+    return arm_controller_ground_pick_to_tray_internal(controller, 0U);
+}
+
+arm_controller_result_t arm_controller_ground_pick_to_tray_and_return(
+    arm_controller_t *controller)
+{
+    return arm_controller_ground_pick_to_tray_internal(controller, 1U);
 }
 
 arm_controller_result_t arm_controller_prepare_ground_place_aligned(

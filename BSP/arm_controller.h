@@ -246,6 +246,14 @@ arm_controller_result_t arm_controller_prepare_ground_pick_aligned(
     arm_controller_t *controller);
 
 /**
+ * 从已经准备好的地面位置取料并放入物料盘：松爪稳定后升到最高点，
+ * 将水平轴收回 0 度并结束，不再转回刚刚取料的靶环。
+ * 仅供任务4使用，下一件由任务状态机设置新目标环。
+ */
+arm_controller_result_t arm_controller_ground_pick_to_tray(
+    arm_controller_t *controller);
+
+/**
  * 从已经准备好的地面位置取料，放入物料盘后再转回靶环方向：
  * Z 轴到达料盘方向后等待，先让 5 号轴下降到位，再让 6 号轴前伸，
  * 松爪稳定后先升高 5 号轴，再收回 6 号轴。
