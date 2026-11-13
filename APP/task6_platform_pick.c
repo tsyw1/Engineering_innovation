@@ -10,9 +10,60 @@
 #define TASK6_MOVE_ACCELERATION       240U
 #define TASK6_MOVE_SETTLE_MS         400U
 #define TASK6_ARM_PREPOSITION_TIMEOUT_MS 3000U
-#define TASK6_MATERIAL_TOLERANCE_PIXEL 2000
+/* 物料盘取料按视觉图像中的轴向偏差判定，边界值也算已对准。 */
+#define TASK6_FIRST_MATERIAL_TOLERANCE_X_PIXEL 10
+#define TASK6_FIRST_MATERIAL_TOLERANCE_Y_PIXEL 10
+#define TASK6_MATERIAL_TOLERANCE_X_PIXEL 73
+#define TASK6_MATERIAL_TOLERANCE_Y_PIXEL 70
+#define TASK6_FINE_ADJUST_POSITION_PULSES_PER_PIXEL 0.32f
+#define TASK6_FINE_ADJUST_MAX_STEP_PULSES 64U
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK6_ROTATE_CLOCKWISE_SIGN   (-1)
+
+static void task6_apply_material_pick_tolerance(
+    task6_platform_pick_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL))
+    {
+        return;
+    }
+
+    /* 每次取料前重新写入，避免被其他任务对同一个视觉对象的初始化覆盖。 */
+    if (task->item_index == 0U)
+    {
+        task->fine_adjust->config.tolerance_x_pixel =
+            TASK6_FIRST_MATERIAL_TOLERANCE_X_PIXEL;
+        task->fine_adjust->config.tolerance_y_pixel =
+            TASK6_FIRST_MATERIAL_TOLERANCE_Y_PIXEL;
+    }
+    else
+    {
+        task->fine_adjust->config.tolerance_x_pixel =
+            TASK6_MATERIAL_TOLERANCE_X_PIXEL;
+        task->fine_adjust->config.tolerance_y_pixel =
+            TASK6_MATERIAL_TOLERANCE_Y_PIXEL;
+    }
+    task->fine_adjust->config.position_pulses_per_pixel =
+        TASK6_FINE_ADJUST_POSITION_PULSES_PER_PIXEL;
+    task->fine_adjust->config.max_step_pulses =
+        TASK6_FINE_ADJUST_MAX_STEP_PULSES;
+    vision_fine_adjust_set_target_match_required(task->fine_adjust, 1U);
+    vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
+}
+
+static void task6_restore_fine_adjust_defaults(
+    task6_platform_pick_t *task)
+{
+    if ((task == NULL) || (task->fine_adjust == NULL))
+    {
+        return;
+    }
+    task->fine_adjust->config.position_pulses_per_pixel =
+        VISION_FINE_ADJUST_DEFAULT_POSITION_PULSES_PER_PIXEL;
+    task->fine_adjust->config.max_step_pulses =
+        VISION_FINE_ADJUST_DEFAULT_MAX_STEP_PULSES;
+    vision_fine_adjust_set_target_match_required(task->fine_adjust, 0U);
+}
 
 static void task6_status(task6_platform_pick_t *task,
                          uint8_t status,
@@ -34,7 +85,10 @@ static task6_platform_pick_result_t task6_fail(
         vision_fine_adjust_abort(task->fine_adjust);
         vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
         vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
+        vision_fine_adjust_set_heading_enabled(task->fine_adjust, 1U);
+        task6_restore_fine_adjust_defaults(task);
         (void)chassis_motion_set_service_callback(NULL, NULL);
+        (void)chassis_motion_set_heading_disturbance_compensation(0U);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK6_PLATFORM_PICK_FAILED;
@@ -186,22 +240,52 @@ static uint16_t task6_backward_distance_mm(uint8_t ring)
     }
 }
 
-static task6_platform_pick_result_t task6_start_tray_position(
-    task6_platform_pick_t *task)
+static task6_platform_pick_result_t task6_start_tray_position_at(
+    task6_platform_pick_t *task,
+    uint8_t item_index)
 {
     if ((task == NULL) || (task->tray == NULL) ||
-        (task->item_index >= TASK6_PLATFORM_PICK_ITEM_COUNT))
+        (item_index >= TASK6_PLATFORM_PICK_ITEM_COUNT))
     {
         return TASK6_PLATFORM_PICK_INVALID_PARAM;
     }
     if (material_tray_servo_set_position(
             task->tray,
-            (material_tray_position_t)task->item_index) !=
+            (material_tray_position_t)item_index) !=
         MATERIAL_TRAY_SERVO_OK)
     {
         return TASK6_PLATFORM_PICK_TRAY_ERROR;
     }
     return TASK6_PLATFORM_PICK_OK;
+}
+
+static task6_platform_pick_result_t task6_start_tray_position(
+    task6_platform_pick_t *task)
+{
+    return task6_start_tray_position_at(
+        task,
+        (task != NULL) ? task->item_index : TASK6_PLATFORM_PICK_ITEM_COUNT);
+}
+
+static arm_controller_result_t task6_start_next_tray_position_callback(
+    void *context)
+{
+    task6_platform_pick_t *task = (task6_platform_pick_t *)context;
+    task6_platform_pick_result_t result;
+
+    if ((task == NULL) ||
+        ((task->item_index + 1U) >= TASK6_PLATFORM_PICK_ITEM_COUNT))
+    {
+        return ARM_CONTROLLER_OK;
+    }
+    result = task6_start_tray_position_at(task,
+                                          (uint8_t)(task->item_index + 1U));
+    if (result != TASK6_PLATFORM_PICK_OK)
+    {
+        return ARM_CONTROLLER_MOTOR_ERROR;
+    }
+    task->tray_position_started = 1U;
+    return ARM_CONTROLLER_OK;
 }
 
 static void task6_finish_tray_position(task6_platform_pick_t *task)
@@ -239,8 +323,8 @@ task6_platform_pick_result_t task6_platform_pick_init(
     task->write_status = write_status;
 
     vision_fine_adjust_config_default(&config);
-    config.tolerance_x_pixel = TASK6_MATERIAL_TOLERANCE_PIXEL;
-    config.tolerance_y_pixel = TASK6_MATERIAL_TOLERANCE_PIXEL;
+    config.tolerance_x_pixel = TASK6_MATERIAL_TOLERANCE_X_PIXEL;
+    config.tolerance_y_pixel = TASK6_MATERIAL_TOLERANCE_Y_PIXEL;
     config.timeout_ms = 0U;
     adjust_result = vision_fine_adjust_init(fine_adjust,
                                             vision_uart_get_default(),
@@ -387,7 +471,11 @@ task6_platform_pick_result_t task6_platform_pick_step(
             task6_status(task,
                          TASK6_PLATFORM_PICK_STATUS_PREPARE,
                          "task6_arm_preposition_during_travel_start");
-            if ((chassis_motion_set_service_callback(
+            if ((chassis_motion_set_heading_disturbance_compensation(1U) !=
+                 CHASSIS_MOTION_OK) ||
+                (chassis_motion_lock_current_heading() !=
+                 CHASSIS_MOTION_OK) ||
+                (chassis_motion_set_service_callback(
                      arm_controller_preposition_service,
                      task->arm) != CHASSIS_MOTION_OK) ||
                 (arm_controller_start_platform_pick_preposition(task->arm) !=
@@ -424,12 +512,24 @@ task6_platform_pick_result_t task6_platform_pick_step(
                                   TASK6_PLATFORM_PICK_ARM_ERROR,
                                   "task6_arm_preposition_failed");
             }
+            (void)chassis_motion_set_heading_disturbance_compensation(0U);
             (void)chassis_motion_set_service_callback(NULL, NULL);
             task->state = TASK6_PLATFORM_PICK_PREPARE_ITEM;
             return TASK6_PLATFORM_PICK_OK;
 
         case TASK6_PLATFORM_PICK_PREPARE_ITEM:
-            result = task6_start_tray_position(task);
+            task6_apply_material_pick_tolerance(task);
+            /* 原料区取料视觉阶段只修正平移，航向误差延后到后续 180 度旋转。 */
+            vision_fine_adjust_set_heading_enabled(task->fine_adjust, 0U);
+            if (task->tray_position_started != 0U)
+            {
+                task->tray_position_started = 0U;
+                result = TASK6_PLATFORM_PICK_OK;
+            }
+            else
+            {
+                result = task6_start_tray_position(task);
+            }
             if (result != TASK6_PLATFORM_PICK_OK)
             {
                 return task6_fail(task, result,
@@ -449,8 +549,8 @@ task6_platform_pick_result_t task6_platform_pick_step(
             }
             else
             {
-                /* 后两件只禁止底盘修正，仍启动视觉等待正确物料进入2000像素容差。 */
-                if (arm_controller_prepare_platform_pick(task->arm) !=
+                /* 后两件禁止底盘平移，只等待匹配颜色进入容差。 */
+                if (arm_controller_prepare_platform_pick_from_tray(task->arm) !=
                     ARM_CONTROLLER_OK)
                 {
                     prepare_result = VISION_FINE_ADJUST_ARM_ERROR;
@@ -526,7 +626,10 @@ task6_platform_pick_result_t task6_platform_pick_step(
             task6_status(task,
                          TASK6_PLATFORM_PICK_STATUS_PICK,
                          "task6_platform_pick_start");
-            arm_result = arm_controller_pick_and_place(task->arm);
+            arm_result = arm_controller_pick_and_place_with_callback(
+                task->arm,
+                task6_start_next_tray_position_callback,
+                task);
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task6_fail(task,
@@ -545,6 +648,8 @@ task6_platform_pick_result_t task6_platform_pick_step(
                 vision_fine_adjust_abort(task->fine_adjust);
                 vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
                 vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
+                vision_fine_adjust_set_heading_enabled(task->fine_adjust, 1U);
+                task6_restore_fine_adjust_defaults(task);
                 (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK6_PLATFORM_PICK_DONE;
                 task6_status(task,
@@ -552,7 +657,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
                              "task6_platform_three_items_done");
                 return TASK6_PLATFORM_PICK_OK;
             }
-            /* 下一次准备动作会先升到最高点；物料盘旋转在准备期间启动。 */
+            /* 下一工位料盘已在放料回收启动时开始旋转；准备阶段只等待其稳定。 */
             task->state = TASK6_PLATFORM_PICK_PREPARE_ITEM;
             return TASK6_PLATFORM_PICK_OK;
 

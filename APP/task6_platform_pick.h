@@ -17,10 +17,10 @@ extern "C" {
 #define TASK6_PLATFORM_PICK_ITEM_COUNT 3U
 #define TASK6_PLATFORM_PICK_ROTATE_DEG 90U
 #define TASK6_PLATFORM_PICK_CENTER 2U
-#define TASK6_PLATFORM_PICK_BACKWARD_TO_AREA_MM 850U
-#define TASK6_PLATFORM_PICK_BACKWARD_RING_1_MM 1120U
-#define TASK6_PLATFORM_PICK_BACKWARD_RING_2_MM 900U
-#define TASK6_PLATFORM_PICK_BACKWARD_RING_3_MM 830U
+#define TASK6_PLATFORM_PICK_BACKWARD_TO_AREA_MM  820U
+#define TASK6_PLATFORM_PICK_BACKWARD_RING_1_MM 1090U
+#define TASK6_PLATFORM_PICK_BACKWARD_RING_2_MM  830U
+#define TASK6_PLATFORM_PICK_BACKWARD_RING_3_MM  800U
 #define TASK6_PLATFORM_PICK_TRAY_SETTLE_MS 100U
 
 typedef void (*task6_platform_pick_status_fn)(uint8_t status,
@@ -81,6 +81,7 @@ typedef struct
     uint8_t item_index;
     uint8_t current_ring;
     uint8_t task_ready;
+    uint8_t tray_position_started;
     task6_platform_pick_state_t state;
 } task6_platform_pick_t;
 

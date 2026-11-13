@@ -219,7 +219,7 @@ task10_return_home_result_t task10_return_home_step(
         case TASK10_RETURN_HOME_LEFT:
             task10_status(task,
                           TASK10_RETURN_HOME_STATUS_MOVE,
-                          "task10_left_1900mm_start");
+                          "task10_left_1870mm_start");
             result = task10_move_linear(task,
                                         TASK10_RETURN_HOME_LEFT_MM,
                                         0,
@@ -227,7 +227,7 @@ task10_return_home_result_t task10_return_home_step(
             if (result != TASK10_RETURN_HOME_OK)
             {
                 return task10_fail(task, result,
-                                   "task10_left_1900mm_failed");
+                                   "task10_left_1870mm_failed");
             }
             task->state = TASK10_RETURN_HOME_WAIT_LEFT;
             return TASK10_RETURN_HOME_OK;
@@ -242,8 +242,8 @@ task10_return_home_result_t task10_return_home_step(
             task10_status(task,
                           TASK10_RETURN_HOME_STATUS_MOVE,
                           (task->start_zone == START_ZONE_2) ?
-                          "task10_forward_980mm_start" : "task10_backward_1050mm_start");
-            /* 区1后退1050 mm；启停区2以前向移动980 mm。 */
+                          "task10_forward_950mm_start" : "task10_backward_1020mm_start");
+            /* 区1后退1020 mm；启停区2以前向移动950 mm。 */
             result = task10_move_linear(task,
                                         (task->start_zone == START_ZONE_2) ?
                                         TASK10_RETURN_HOME_ZONE2_FORWARD_MM : TASK10_RETURN_HOME_BACKWARD_MM,
@@ -253,7 +253,7 @@ task10_return_home_result_t task10_return_home_step(
             {
                 return task10_fail(task, result,
                                    (task->start_zone == START_ZONE_2) ?
-                                   "task10_forward_980mm_failed" : "task10_backward_1050mm_failed");
+                                   "task10_forward_950mm_failed" : "task10_backward_1020mm_failed");
             }
             task->state = TASK10_RETURN_HOME_WAIT_LONGITUDINAL;
             return TASK10_RETURN_HOME_OK;

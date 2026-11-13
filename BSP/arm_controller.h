@@ -23,17 +23,18 @@
 #define ARM_CONTROLLER_HORIZONTAL_SPEED_RPM      70U
 #define ARM_CONTROLLER_HORIZONTAL_ACCELERATION   50U
 /* 5 号、6 号电机采用开环位置命令；命令发送后固定等待，不再等待到位标志。 */
-#define ARM_CONTROLLER_LIFT_MOVE_WAIT_MS        200U
+#define ARM_CONTROLLER_LIFT_MOVE_WAIT_MS        350U
 #define ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS   500U
-#define ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS  500U
+#define ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS  300U
 #define ARM_CONTROLLER_RELEASE_DELAY_MS          300U
 #define ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS  100U
 #define ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS   100U
 #define ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS     100U
-#define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS       20U
+#define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS       50U
 #define ARM_CONTROLLER_GRIPPER_OPEN_DELAY_MS     100U
 #define ARM_CONTROLLER_PLATFORM_PICK_OPEN_DELAY_MS 300U
-#define ARM_CONTROLLER_TRAY_PICK_OPEN_DELAY_MS  150U
+#define ARM_CONTROLLER_TRAY_PICK_OPEN_DELAY_MS  1300U
+#define ARM_CONTROLLER_TRAVEL_PLATFORM_ROTATE_TIME_MS 100U
 #define ARM_CONTROLLER_PICK_POSITION_SETTLE_MS  150U
 #define ARM_CONTROLLER_PICK_LIFT_MOVE_WAIT_MS   ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS
 #define ARM_CONTROLLER_PLATFORM_GRIP_DELAY_MS    500U
@@ -41,8 +42,7 @@
 #define ARM_CONTROLLER_RING_HORIZONTAL_SETTLE_MS 300U
 #define ARM_CONTROLLER_PLATFORM_ALIGN_SETTLE_MS  200U
 #define ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS     100U
-#define ARM_CONTROLLER_GROUND_TRAY_WAIT_MS         0U
-#define ARM_CONTROLLER_GROUND_TRAY_OVERLAP_WAIT_MS 400U
+#define ARM_CONTROLLER_GROUND_TRAY_WAIT_MS         ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS
 #define ARM_CONTROLLER_TRAY_ROTATION_SETTLE_MS    50U
 #define ARM_CONTROLLER_TRAY_PICK_OPEN_ANGLE_DEG   20U
 
@@ -56,8 +56,9 @@
 #define ARM_CONTROLLER_PLATFORM_LIFT_ANGLE_DEG   (-1253.5f)
 /* 平台取料在原标定值基础上继续下降 50 度。 */
 #define ARM_CONTROLLER_PLATFORM_PICK_LIFT_ANGLE_DEG (-1303.5f)
-#define ARM_CONTROLLER_PLATFORM_TRAY_PLACE_LIFT_ANGLE_DEG (-180.0f)
-#define ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG  (-700.4f)
+/* 物料盘放置保持最高点，不再下降后松爪。 */
+#define ARM_CONTROLLER_PLATFORM_TRAY_PLACE_LIFT_ANGLE_DEG 0.0f
+#define ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG  (-750.4f)
 #define ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG     (-3660.6f)
 /* 地面取料在原标定值基础上继续下降 50 度。 */
 #define ARM_CONTROLLER_GROUND_PICK_LIFT_ANGLE_DEG (-3600.6f)
@@ -65,7 +66,7 @@
 
 #define ARM_CONTROLLER_Z_TRAY_POSITION           3830U
 #define ARM_CONTROLLER_Z_PLATFORM_POSITION       1305U
-#define ARM_CONTROLLER_Z_RING_1_POSITION         1892U
+#define ARM_CONTROLLER_Z_RING_1_POSITION         1882U
 #define ARM_CONTROLLER_Z_RING_2_POSITION         1315U
 #define ARM_CONTROLLER_Z_RING_3_POSITION         705U
 
@@ -111,6 +112,10 @@ typedef enum
     ARM_CONTROLLER_PREPOSITION_DONE,
     ARM_CONTROLLER_PREPOSITION_FAILED
 } arm_controller_preposition_state_t;
+
+/* 开爪稳定后、机械臂开始回收时触发，用于并行启动下一机构动作。 */
+typedef arm_controller_result_t (*arm_controller_release_callback_t)(
+    void *context);
 
 typedef struct
 {
@@ -171,6 +176,10 @@ arm_controller_result_t arm_controller_set_target_ring(
 arm_controller_result_t arm_controller_face_target_ring(
     arm_controller_t *controller);
 
+/** 异步启动当前目标环的 Z 轴转向，不等待舵机完成。 */
+arm_controller_result_t arm_controller_start_target_ring_rotation(
+    arm_controller_t *controller);
+
 /**
  * 兼容旧任务层的 Z 轴保持接口。舵机由 PWM 持续保持目标位置，
  * 因此本接口只检查舵机是否已就绪，不再重发步进电机位置命令。
@@ -222,6 +231,12 @@ arm_controller_result_t arm_controller_wait_preposition(
 arm_controller_result_t arm_controller_pick_and_place(
     arm_controller_t *controller);
 
+/** 平台取料放盘，并在机械臂回收启动时执行可选回调。 */
+arm_controller_result_t arm_controller_pick_and_place_with_callback(
+    arm_controller_t *controller,
+    arm_controller_release_callback_t callback,
+    void *context);
+
 /**
  * 从已经准备好的地面位置取料并放到物料盘：
  * 1. 夹爪闭合取料；
@@ -245,7 +260,7 @@ arm_controller_result_t arm_controller_place_to_ground(
     arm_controller_t *controller);
 
 /**
- * 先在最高点完成物料盘方向转向和水平伸长，再打开 20 度并等待 150 ms、下降取料，
+ * 先在最高点完成物料盘方向转向和水平伸长，再打开 20 度并等待 300 ms、下降取料，
  * 闭合保持 500 ms 后回到最高点。
  */
 arm_controller_result_t arm_controller_pick_from_tray(
@@ -283,6 +298,10 @@ arm_controller_result_t arm_controller_finish_place(
 arm_controller_result_t arm_controller_preposition_platform_z(
     arm_controller_t *controller);
 
+/** 行驶途中低速异步转到平台方向，只下发 Z 轴命令，不执行归零或等待。 */
+arm_controller_result_t arm_controller_start_platform_rotation_during_travel(
+    arm_controller_t *controller);
+
 /** 平台夹取准备：先完成收回、转向，再在最高点开爪等待 300 ms 后下降。 */
 arm_controller_result_t arm_controller_prepare_platform_pick(
     arm_controller_t *controller);
@@ -291,8 +310,16 @@ arm_controller_result_t arm_controller_prepare_platform_pick(
 arm_controller_result_t arm_controller_prepare_platform_pick_aligned(
     arm_controller_t *controller);
 
-/** 地面夹取准备：Z 轴顺时针 180 度、打开夹爪、下降到地面取料高度。 */
+/** 刚从物料盘放料回收后取下一件：跳过重复的升降轴和水平轴等待，直接转平台方向。 */
+arm_controller_result_t arm_controller_prepare_platform_pick_from_tray(
+    arm_controller_t *controller);
+
+/** 地面夹取准备：高位收回水平轴，转到目标环方向，打开夹爪并下降取料。 */
 arm_controller_result_t arm_controller_prepare_ground_pick(
+    arm_controller_t *controller);
+
+/** 刚从物料盘放料回收后取下一件靶环：跳过重复回零，直接转目标环并下降。 */
+arm_controller_result_t arm_controller_prepare_ground_pick_from_tray(
     arm_controller_t *controller);
 
 /** 已经面向靶环时的地面夹取准备：打开夹爪并下降，不旋转 Z 轴。 */
@@ -306,6 +333,12 @@ arm_controller_result_t arm_controller_prepare_ground_pick_aligned(
  */
 arm_controller_result_t arm_controller_ground_pick_to_tray(
     arm_controller_t *controller);
+
+/** 地面取料放盘，并在机械臂回收启动时执行可选回调。 */
+arm_controller_result_t arm_controller_ground_pick_to_tray_with_callback(
+    arm_controller_t *controller,
+    arm_controller_release_callback_t callback,
+    void *context);
 
 /** 地面放置准备：水平轴保持 0 度，转到靶环方向后下降供视觉识别。 */
 arm_controller_result_t arm_controller_prepare_ground_place(

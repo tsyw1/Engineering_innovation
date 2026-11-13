@@ -146,13 +146,28 @@ arm_z_servo_axis_result_t arm_z_servo_axis_move_to_position(
     arm_z_servo_axis_t *axis,
     uint16_t position)
 {
+    if (axis == NULL)
+    {
+        return ARM_Z_SERVO_AXIS_NOT_READY;
+    }
+    return arm_z_servo_axis_move_to_position_timed(
+        axis,
+        position,
+        axis->config.run_time_ms);
+}
+
+arm_z_servo_axis_result_t arm_z_servo_axis_move_to_position_timed(
+    arm_z_servo_axis_t *axis,
+    uint16_t position,
+    uint16_t run_time_ms)
+{
     joho_bus_servo_result_t result;
 
     if (!arm_z_servo_axis_ready(axis))
     {
         return ARM_Z_SERVO_AXIS_NOT_READY;
     }
-    if (position > JOHO_BUS_SERVO_POSITION_MAX)
+    if ((position > JOHO_BUS_SERVO_POSITION_MAX) || (run_time_ms == 0U))
     {
         return ARM_Z_SERVO_AXIS_INVALID_PARAM;
     }
@@ -160,7 +175,7 @@ arm_z_servo_axis_result_t arm_z_servo_axis_move_to_position(
     result = joho_bus_servo_set_position(axis->huart,
                                          axis->config.servo_id,
                                          position,
-                                         axis->config.run_time_ms);
+                                         run_time_ms);
     if (result == JOHO_BUS_SERVO_OK)
     {
         axis->target_angle_deg = ((float)position *

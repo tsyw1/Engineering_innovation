@@ -11,7 +11,7 @@
 #define TASK9_ARM_PREPOSITION_TIMEOUT_MS 3000U
 #define TASK9_ROTATE_CLOCKWISE_SIGN  (-1)
 #define TASK9_TEMPORARY_STACK_TOLERANCE_PIXEL       3
-#define TASK9_TEMPORARY_STACK_POSITION_SETTLE_MS   40U
+#define TASK9_TEMPORARY_STACK_POSITION_SETTLE_MS   20U
 
 static void task9_status(task9_temporary_stack_t *task,
                          uint8_t status,
@@ -73,6 +73,7 @@ static task9_temporary_stack_result_t task9_fail(
         vision_fine_adjust_abort(task->fine_adjust);
         task9_restore_fine_adjust_config(task);
         (void)chassis_motion_set_service_callback(NULL, NULL);
+        (void)chassis_motion_set_heading_disturbance_compensation(0U);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK9_TEMPORARY_STACK_FAILED;
@@ -469,7 +470,11 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             return TASK9_TEMPORARY_STACK_OK;
 
         case TASK9_TEMPORARY_STACK_BACKWARD_TO_AREA:
-            if ((arm_controller_set_target_ring(
+            if ((chassis_motion_set_heading_disturbance_compensation(1U) !=
+                 CHASSIS_MOTION_OK) ||
+                (chassis_motion_lock_current_heading() !=
+                 CHASSIS_MOTION_OK) ||
+                (arm_controller_set_target_ring(
                      task->arm,
                      TASK9_TEMPORARY_STACK_CENTER) != ARM_CONTROLLER_OK) ||
                 (chassis_motion_set_service_callback(
@@ -511,6 +516,7 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
                                   TASK9_TEMPORARY_STACK_ARM_ERROR,
                                   "task9_arm_preposition_failed");
             }
+            (void)chassis_motion_set_heading_disturbance_compensation(0U);
             (void)chassis_motion_set_service_callback(NULL, NULL);
             task->current_ring = TASK9_TEMPORARY_STACK_CENTER;
             task->state = TASK9_TEMPORARY_STACK_PREPARE_ITEM;

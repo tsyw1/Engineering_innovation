@@ -54,23 +54,73 @@ static task4_ring_return_result_t task4_select_target_ring(
     return TASK4_RING_RETURN_OK;
 }
 
-static task4_ring_return_result_t task4_start_tray_position(
-    task4_ring_return_t *task)
+static task4_ring_return_result_t task4_start_tray_position_at(
+    task4_ring_return_t *task,
+    uint8_t item_index)
 {
     if ((task == NULL) || (task->tray == NULL) ||
-        (task->item_index >= TASK4_RING_RETURN_ITEM_COUNT))
+        (item_index >= TASK4_RING_RETURN_ITEM_COUNT))
     {
         return TASK4_RING_RETURN_INVALID_PARAM;
     }
 
     if (material_tray_servo_set_position(
             task->tray,
-            (material_tray_position_t)task->item_index) !=
+            (material_tray_position_t)item_index) !=
         MATERIAL_TRAY_SERVO_OK)
     {
         return TASK4_RING_RETURN_TRAY_ERROR;
     }
     return TASK4_RING_RETURN_OK;
+}
+
+static task4_ring_return_result_t task4_start_tray_position(
+    task4_ring_return_t *task)
+{
+    return task4_start_tray_position_at(
+        task,
+        (task != NULL) ? task->item_index : TASK4_RING_RETURN_ITEM_COUNT);
+}
+
+static void task4_finish_tray_position(task4_ring_return_t *task)
+{
+    if (task == NULL)
+    {
+        return;
+    }
+
+    /* 首件料盘定位后，按原料区取料流程等待舵机稳定。 */
+    HAL_Delay(TASK4_RING_RETURN_TRAY_SETTLE_MS);
+}
+
+static arm_controller_result_t task4_start_next_tray_position_callback(
+    void *context)
+{
+    task4_ring_return_t *task = (task4_ring_return_t *)context;
+    task4_ring_return_result_t result;
+    uint8_t next_item_index;
+    uint8_t next_target_ring;
+
+    if ((task == NULL) ||
+        ((task->item_index + 1U) >= TASK4_RING_RETURN_ITEM_COUNT))
+    {
+        return ARM_CONTROLLER_OK;
+    }
+
+    next_item_index = (uint8_t)(task->item_index + 1U);
+    next_target_ring = task4_target_ring_for_item(task, next_item_index);
+    /* 回调发生在升降轴开始回收、水平轴尚未收回时；这里只启动料盘，
+     * 目标环 Z 轴转向留到下一件准备阶段，避免低位/伸出状态转向。 */
+    if ((next_target_ring < 1U) || (next_target_ring > 3U) ||
+        (arm_controller_set_target_ring(task->arm, next_target_ring) !=
+         ARM_CONTROLLER_OK))
+    {
+        return ARM_CONTROLLER_MOTOR_ERROR;
+    }
+
+    result = task4_start_tray_position_at(task, next_item_index);
+    return (result == TASK4_RING_RETURN_OK) ?
+           ARM_CONTROLLER_OK : ARM_CONTROLLER_MOTOR_ERROR;
 }
 
 task4_ring_return_result_t task4_ring_return_init(
@@ -151,6 +201,7 @@ task4_ring_return_result_t task4_ring_return_submit_qr(
                           TASK4_RING_RETURN_TRAY_ERROR,
                           "task4_tray_position_failed");
     }
+    task4_finish_tray_position(task);
     /* 任务3结束后底盘仍停在2号环。 */
     task->current_ring = TASK4_RING_RETURN_CENTER;
     task->target_ring = task->current_ring;
@@ -213,7 +264,10 @@ task4_ring_return_result_t task4_ring_return_step(
                                   TASK4_RING_RETURN_ARM_ERROR,
                                   "task4_set_target_ring_failed");
             }
-            arm_result = arm_controller_prepare_ground_pick(task->arm);
+            arm_result = (task->item_index == 0U) ?
+                         arm_controller_prepare_ground_pick(task->arm) :
+                         arm_controller_prepare_ground_pick_from_tray(
+                             task->arm);
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task4_fail(task,
@@ -259,9 +313,12 @@ task4_ring_return_result_t task4_ring_return_step(
             task4_status(task,
                          TASK4_RING_RETURN_STATUS_PICK,
                          "task4_ground_pick_start");
-            /* 放盘后机械臂已升高并收回水平轴；下一件准备阶段再按目标环
-             * 安全转向，避免在物料盘旋转前串行转回靶环。 */
-            arm_result = arm_controller_ground_pick_to_tray(task->arm);
+            /* 开爪稳定 50 ms 后，回收升降轴的同时启动下一工位料盘；
+             * 下一件准备阶段再按目标环安全转向。 */
+            arm_result = arm_controller_ground_pick_to_tray_with_callback(
+                task->arm,
+                task4_start_next_tray_position_callback,
+                task);
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task4_fail(task,
@@ -287,14 +344,6 @@ task4_ring_return_result_t task4_ring_return_step(
                              TASK4_RING_RETURN_STATUS_DONE,
                              "task4_three_items_returned");
                 return TASK4_RING_RETURN_OK;
-            }
-            /* 回盘动作内部已完成稳定等待，并已升高、收回水平轴；
-             * 此时立即启动下一工位旋转，与下一件机械臂准备并行。 */
-            result = task4_start_tray_position(task);
-            if (result != TASK4_RING_RETURN_OK)
-            {
-                return task4_fail(task, result,
-                                  "task4_tray_position_failed");
             }
             task->state = TASK4_RING_RETURN_MOVE_TO_ITEM;
             return TASK4_RING_RETURN_OK;

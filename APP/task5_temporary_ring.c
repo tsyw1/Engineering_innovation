@@ -12,7 +12,7 @@
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK5_ROTATE_CLOCKWISE_SIGN   (-1)
 #define TASK5_TEMPORARY_RING_TOLERANCE_PIXEL       3
-#define TASK5_TEMPORARY_RING_POSITION_SETTLE_MS   40U
+#define TASK5_TEMPORARY_RING_POSITION_SETTLE_MS   20U
 
 static void task5_status(task5_temporary_ring_t *task,
                          uint8_t status,
@@ -74,6 +74,7 @@ static task5_temporary_ring_result_t task5_fail(
         vision_fine_adjust_abort(task->fine_adjust);
         task5_restore_fine_adjust_config(task);
         (void)chassis_motion_set_service_callback(NULL, NULL);
+        (void)chassis_motion_set_heading_disturbance_compensation(0U);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK5_TEMPORARY_RING_FAILED;
@@ -427,7 +428,11 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
             return TASK5_TEMPORARY_RING_OK;
 
         case TASK5_TEMPORARY_RING_BACKWARD_TO_AREA:
-            if ((chassis_motion_set_service_callback(
+            if ((chassis_motion_set_heading_disturbance_compensation(1U) !=
+                 CHASSIS_MOTION_OK) ||
+                (chassis_motion_lock_current_heading() !=
+                 CHASSIS_MOTION_OK) ||
+                (chassis_motion_set_service_callback(
                      arm_controller_preposition_service,
                      task->arm) != CHASSIS_MOTION_OK) ||
                 (arm_controller_start_ground_place_preposition(
@@ -468,6 +473,7 @@ task5_temporary_ring_result_t task5_temporary_ring_step(
                                   TASK5_TEMPORARY_RING_ARM_ERROR,
                                   "task5_arm_preposition_failed");
             }
+            (void)chassis_motion_set_heading_disturbance_compensation(0U);
             (void)chassis_motion_set_service_callback(NULL, NULL);
             task->current_ring = TASK5_TEMPORARY_RING_CENTER;
             task->state = TASK5_TEMPORARY_RING_PREPARE_ITEM;

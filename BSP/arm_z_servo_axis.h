@@ -62,6 +62,10 @@ arm_z_servo_axis_result_t arm_z_servo_axis_move_to(
 arm_z_servo_axis_result_t arm_z_servo_axis_move_to_position(
     arm_z_servo_axis_t *axis,
     uint16_t position);
+arm_z_servo_axis_result_t arm_z_servo_axis_move_to_position_timed(
+    arm_z_servo_axis_t *axis,
+    uint16_t position,
+    uint16_t run_time_ms);
 arm_z_servo_axis_result_t arm_z_servo_axis_stop(
     arm_z_servo_axis_t *axis);
 arm_z_servo_axis_result_t arm_z_servo_axis_set_zero(

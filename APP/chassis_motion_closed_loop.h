@@ -31,6 +31,23 @@ chassis_motion_result_t chassis_motion_set_service_callback(
     chassis_motion_service_fn callback,
     void *context);
 
+/** 保持启动参考航向，不再把当前已经偏转的航向重新设为目标。 */
+chassis_motion_result_t chassis_motion_lock_current_heading(void);
+
+/** 捕获小车上电后的初始偏航角，作为整个流程的固定航向参考。 */
+chassis_motion_result_t chassis_motion_capture_startup_heading(void);
+
+/** 读取当前流程应保持的目标航向。 */
+chassis_motion_result_t chassis_motion_get_target_heading(
+    float *target_yaw_deg);
+
+/** 将当前车体航向矫正到本段流程目标航向。 */
+chassis_motion_result_t chassis_motion_correct_heading(void);
+
+/** 切换机械臂扰动期间的增强航向保持参数。 */
+chassis_motion_result_t chassis_motion_set_heading_disturbance_compensation(
+    uint8_t enable);
+
 /** 按世界坐标目标航向执行一段直线/横移，函数返回时车辆已稳定停车。 */
 chassis_motion_result_t chassis_motion_move_linear_mm(
     mecanum_chassis_t *chassis,

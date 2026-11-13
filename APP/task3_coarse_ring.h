@@ -14,9 +14,9 @@
 extern "C" {
 #endif
 
-#define TASK3_COARSE_RING_LEFT_MM       100U
+#define TASK3_COARSE_RING_LEFT_MM        70U
 #define TASK3_COARSE_RING_ROTATE_DEG    180U
-#define TASK3_COARSE_RING_RIGHT_MM     1670U
+#define TASK3_COARSE_RING_RIGHT_MM     1640U
 #define TASK3_COARSE_RING_CENTER        2U
 
 typedef void (*task3_coarse_ring_status_fn)(uint8_t status,

@@ -12,10 +12,10 @@ extern "C" {
 #endif
 
 #define TASK10_RETURN_HOME_CENTER_RING 2U
-#define TASK10_RETURN_HOME_LEFT_MM 1900U
-#define TASK10_RETURN_HOME_BACKWARD_MM 1050U
-/* 启停区2从暂存区返回起点时，以车体前向移动980 mm。 */
-#define TASK10_RETURN_HOME_ZONE2_FORWARD_MM 980U
+#define TASK10_RETURN_HOME_LEFT_MM 1870U
+#define TASK10_RETURN_HOME_BACKWARD_MM 1020U
+/* 启停区2从暂存区返回起点时，以车体前向移动950 mm。 */
+#define TASK10_RETURN_HOME_ZONE2_FORWARD_MM 950U
 
 typedef void (*task10_return_home_status_fn)(uint8_t status,
                                              const char *event);

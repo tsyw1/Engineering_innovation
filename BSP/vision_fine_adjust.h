@@ -17,11 +17,26 @@
 #define VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_X_PIXEL  8
 #define VISION_FINE_ADJUST_COARSE_PICK_TOLERANCE_Y_PIXEL  8
 
-/* 微调期间保持启动时航向，单位分别为度和位置脉冲/度。 */
-#define VISION_FINE_ADJUST_DEFAULT_HEADING_TOLERANCE_DEG  0.30f
-#define VISION_FINE_ADJUST_DEFAULT_HEADING_KP_PULSES_PER_DEG  0.80f
-#define VISION_FINE_ADJUST_DEFAULT_HEADING_MAX_CORRECTION_PULSES  16U
+/* 靶环微调期间保持启动时航向，单位分别为度和位置脉冲/度。 */
+#define VISION_FINE_ADJUST_DEFAULT_HEADING_TOLERANCE_DEG  0.05f
+#define VISION_FINE_ADJUST_DEFAULT_HEADING_KP_PULSES_PER_DEG  2.20f
+#define VISION_FINE_ADJUST_DEFAULT_HEADING_MAX_CORRECTION_PULSES  40U
 #define VISION_FINE_ADJUST_DEFAULT_HEADING_MAX_AGE_MS  120U
+#define VISION_FINE_ADJUST_DEFAULT_POSITION_PULSES_PER_PIXEL  0.60f
+#define VISION_FINE_ADJUST_DEFAULT_MAX_STEP_PULSES  100U
+
+/* 靶环初调阶段：误差较大时使用更大的步长和更积极的航向补偿。 */
+#define VISION_FINE_ADJUST_RING_COARSE_THRESHOLD_PIXEL  20
+#define VISION_FINE_ADJUST_RING_COARSE_HEADING_TOLERANCE_DEG  0.30f
+#define VISION_FINE_ADJUST_RING_COARSE_HEADING_KP_PULSES_PER_DEG  4.00f
+#define VISION_FINE_ADJUST_RING_COARSE_HEADING_MAX_CORRECTION_PULSES  72U
+#define VISION_FINE_ADJUST_RING_COARSE_POSITION_PULSES_PER_PIXEL  1.20f
+#define VISION_FINE_ADJUST_RING_COARSE_MAX_STEP_PULSES  180U
+#define VISION_FINE_ADJUST_RING_COARSE_POSITION_SPEED_RPM  300U
+
+/* 首个物料平移微调开始前，连续帧误差允许的最大变化量，单位：像素。 */
+#define VISION_FINE_ADJUST_STABLE_FRAME_COUNT  3U
+#define VISION_FINE_ADJUST_STABLE_ERROR_DELTA_PIXEL  5.0f
 
 /* 临时流程联调开关：1=跳过视觉模式发送、视觉帧等待和底盘细调，
  * 保留机械臂准备及任务状态机；恢复视觉时改为 0。 */
@@ -60,6 +75,12 @@ typedef enum
     VISION_FINE_ADJUST_REJECT_TARGET
 } vision_fine_adjust_reject_reason_t;
 
+typedef enum
+{
+    VISION_FINE_ADJUST_PHASE_FINE = 0,
+    VISION_FINE_ADJUST_PHASE_COARSE
+} vision_fine_adjust_phase_t;
+
 typedef struct
 {
     /* 像素误差到车体速度的比例，需结合相机安装和实车标定。 */
@@ -74,12 +95,12 @@ typedef struct
     int16_t tolerance_y_pixel;
     uint32_t max_age_ms;
     uint32_t timeout_ms;
-    /* 位置模式细调参数：每帧最多发送少量相对位置脉冲。 */
+    /* 位置模式细调参数：每个控制周期发送少量相对位置脉冲。 */
     float position_pulses_per_pixel;
     uint8_t max_step_pulses;
     uint16_t position_speed_rpm;
     uint8_t position_acceleration;
-    /* 两次位置脉冲之间的最小间隔，避免新命令连续打断上一条动作。 */
+    /* 两次位置脉冲之间的最小控制间隔，保证连续输出时不打断电机执行。 */
     uint16_t position_settle_ms;
     float heading_tolerance_deg;
     float heading_kp_pulses_per_deg;
@@ -95,16 +116,33 @@ typedef struct
     vision_fine_adjust_config_t config;
     vision_uart_mode_t mode;
     uint8_t target_id;
+    /* 1=视觉微调期间允许航向补偿，0=只做平移位置修正。 */
+    uint8_t heading_adjust_enabled;
+    /* 1=只有匹配 target_id 的检测结果才能驱动位置修正。 */
+    uint8_t require_target_match;
     uint32_t start_tick;
     uint8_t command_active;
     uint32_t last_command_tick;
+    /* 缓存最近一帧有效视觉结果，允许在视觉帧间隔内连续输出小步脉冲。 */
+    vision_uart_frame_t last_frame;
+    uint8_t last_frame_valid;
+    /* 首个物料平移微调开始前的连续稳定帧判定缓存。 */
+    uint8_t stable_frame_count;
+    uint8_t stability_confirmed;
+    uint8_t stable_frame_valid;
+    uint8_t stable_detection_id;
+    uint32_t stable_last_seq;
+    float stable_dx;
+    float stable_dy;
     float heading_target_deg;
     uint8_t heading_target_valid;
     vision_fine_adjust_reject_reason_t last_reject_reason;
     /* 1=后续物料采用粗略取料窗口，0=使用默认精调窗口。 */
     uint8_t coarse_pick_enabled;
-    /* 1=允许视觉误差驱动底盘，0=只观察目标是否进入容差，不移动底盘。 */
+    /* 1=允许视觉误差驱动底盘平移，0=禁止平移；航向策略由视觉模式决定。 */
     uint8_t motion_enabled;
+    /* 靶环模式先初调，进入误差窗口后切换到细调。 */
+    vision_fine_adjust_phase_t phase;
     vision_fine_adjust_state_t state;
 } vision_fine_adjust_t;
 
@@ -119,6 +157,11 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
 void vision_fine_adjust_set_heading_sensor(
     vision_fine_adjust_t *adjust,
     hwt101ct_t *yaw_sensor);
+
+/* 设置视觉微调期间是否执行航向补偿；关闭后由上层旋转闭环统一修正。 */
+void vision_fine_adjust_set_heading_enabled(
+    vision_fine_adjust_t *adjust,
+    uint8_t enabled);
 
 /* 发送模式命令并开始等待视觉帧；夹取阶段传 mode=1，放置阶段传 mode=2。 */
 vision_fine_adjust_result_t vision_fine_adjust_start(
@@ -137,10 +180,14 @@ vision_fine_adjust_result_t vision_fine_adjust_start_preselected(
     vision_uart_mode_t mode,
     uint8_t target_id);
 
-/* 在主循环周期调用；每个有效视觉帧只执行一次相对位置脉冲。
- * 目标 ID 暂不匹配时仍允许使用其他有效目标校准，但不会返回已对准。 */
+/* 在主循环周期调用；最近一帧仍新鲜时按稳定间隔连续执行相对位置脉冲。 */
 vision_fine_adjust_result_t vision_fine_adjust_step(
     vision_fine_adjust_t *adjust);
+
+/* 设置是否必须看到匹配 target_id 的物料才能进行视觉位置修正。 */
+void vision_fine_adjust_set_target_match_required(
+    vision_fine_adjust_t *adjust,
+    uint8_t enabled);
 
 /* 设置平台取料的粗略窗口；关闭后恢复默认精调容差。 */
 void vision_fine_adjust_set_coarse_pick(

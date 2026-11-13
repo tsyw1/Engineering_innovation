@@ -29,7 +29,7 @@
 #define FLOW_TEST_STOP_SPEED_MPS       CHASSIS_ODOMETRY_STOP_SPEED_MPS
 #define FLOW_TEST_STOP_WZ_RAD_S         0.05f
 #define FLOW_TEST_ROTATE_TOL_DEG        0.50f
-#define FLOW_TEST_ROTATE_SPEED_SCALE    3.00f
+#define FLOW_TEST_ROTATE_SPEED_SCALE    CHASSIS_ODOMETRY_ROTATE_SPEED_SCALE
 #define FLOW_TEST_DEG_TO_RAD     0.01745329251994329577f
 #define FLOW_TEST_TRAY_SETTLE_MS       300U
 #define FLOW_TEST_PLATFORM_TRAY_SETTLE_MS 100U
@@ -101,15 +101,15 @@ typedef struct
 /* 固定路线：机械臂动作使用已标定的固定位置，不调用视觉或二维码。 */
 static const flow_test_action_t s_flow_actions[] =
 {
-    FLOW_LINEAR(1U,  100,    0, "task1_forward_100mm"),
+    FLOW_LINEAR(1U,   70,    0, "task1_forward_70mm"),
     FLOW_START_LATERAL(1U,       "task1_start_zone_lateral"),
     FLOW_ARM(1U, FLOW_TEST_ARM_PLATFORM_PREPOSITION, 0U, 0U,
              "task1_preposition_platform_z"),
-    FLOW_LINEAR(1U,  150,    0, "task1_forward_qr_150mm"),
+    FLOW_LINEAR(1U,  120,    0, "task1_forward_qr_120mm"),
     FLOW_DWELL(1U,                 "task1_fixed_qr_point"),
 
-    FLOW_LINEAR(2U,  800,    0, "task2_forward_800mm"),
-    FLOW_LINEAR(2U,    0, -920, "task2_right_920mm"),
+    FLOW_LINEAR(2U,  770,    0, "task2_forward_770mm"),
+    FLOW_LINEAR(2U,    0, -850, "task2_right_850mm"),
     FLOW_ARM(2U, FLOW_TEST_ARM_PLATFORM_PICK_ALIGNED, 0U, 0U,
              "task2_platform_pick_item_1"),
     FLOW_ARM(2U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 1U,
@@ -117,9 +117,9 @@ static const flow_test_action_t s_flow_actions[] =
     FLOW_ARM(2U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 2U,
              "task2_platform_pick_item_3"),
 
-    FLOW_LINEAR(3U,    0,  100, "task3_left_100mm"),
+    FLOW_LINEAR(3U,    0,   70, "task3_left_70mm"),
     FLOW_ROTATE(3U,  180,         "task3_rotate_ccw_180deg"),
-    FLOW_LINEAR(3U,    0, -1670, "task3_right_1670mm"),
+    FLOW_LINEAR(3U,    0, -1640, "task3_right_1640mm"),
     FLOW_ARM(3U, FLOW_TEST_ARM_RING_PLACE, 1U, 0U,
              "task3_place_item_to_ring_1"),
     FLOW_ARM(3U, FLOW_TEST_ARM_RING_PLACE, 2U, 1U,
@@ -134,9 +134,9 @@ static const flow_test_action_t s_flow_actions[] =
     FLOW_ARM(4U, FLOW_TEST_ARM_RING_PICK, 3U, 2U,
              "task4_pick_item_from_ring_3"),
 
-    FLOW_LINEAR(5U, -860,    0, "task5_backward_from_ring_2_860mm"),
+    FLOW_LINEAR(5U, -830,    0, "task5_backward_from_ring_2_830mm"),
     FLOW_ROTATE(5U,  -90,         "task5_rotate_cw_90deg"),
-    FLOW_LINEAR(5U, -850,    0, "task5_backward_to_area_850mm"),
+    FLOW_LINEAR(5U, -820,    0, "task5_backward_to_area_820mm"),
     FLOW_ARM(5U, FLOW_TEST_ARM_RING_PLACE, 1U, 0U,
              "task5_place_item_to_temporary_ring_1"),
     FLOW_ARM(5U, FLOW_TEST_ARM_RING_PLACE, 2U, 1U,
@@ -146,9 +146,9 @@ static const flow_test_action_t s_flow_actions[] =
     FLOW_ARM(5U, FLOW_TEST_ARM_TRAVEL_SAFE, 0U, 0U,
              "task5_restore_arm_travel_safe"),
 
-    FLOW_LINEAR(6U, -900,    0, "task6_backward_from_ring_2_900mm"),
+    FLOW_LINEAR(6U, -830,    0, "task6_backward_from_ring_2_830mm"),
     FLOW_ROTATE(6U,  -90,         "task6_rotate_cw_90deg"),
-    FLOW_LINEAR(6U, -850,    0, "task6_backward_to_area_850mm"),
+    FLOW_LINEAR(6U, -820,    0, "task6_backward_to_area_820mm"),
     FLOW_ARM(6U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 0U,
              "task6_platform_pick_item_1"),
     FLOW_ARM(6U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 1U,
@@ -156,9 +156,9 @@ static const flow_test_action_t s_flow_actions[] =
     FLOW_ARM(6U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 2U,
              "task6_platform_pick_item_3"),
 
-    FLOW_LINEAR(7U,    0,  100, "task7_left_100mm"),
+    FLOW_LINEAR(7U,    0,   70, "task7_left_70mm"),
     FLOW_ROTATE(7U,  180,         "task7_rotate_ccw_180deg"),
-    FLOW_LINEAR(7U,    0, -1670, "task7_right_1670mm"),
+    FLOW_LINEAR(7U,    0, -1640, "task7_right_1640mm"),
     FLOW_ARM(7U, FLOW_TEST_ARM_RING_PLACE, 1U, 0U,
              "task7_place_item_to_ring_1"),
     FLOW_ARM(7U, FLOW_TEST_ARM_RING_PLACE, 2U, 1U,
@@ -173,14 +173,14 @@ static const flow_test_action_t s_flow_actions[] =
     FLOW_ARM(8U, FLOW_TEST_ARM_RING_PICK, 3U, 2U,
              "task8_pick_item_from_ring_3"),
 
-    FLOW_LINEAR(9U, -860,    0, "task9_backward_from_ring_2_860mm"),
+    FLOW_LINEAR(9U, -830,    0, "task9_backward_from_ring_2_830mm"),
     FLOW_ROTATE(9U,  -90,         "task9_rotate_cw_90deg"),
-    FLOW_LINEAR(9U, -860,    0, "task9_backward_to_area_860mm"),
+    FLOW_LINEAR(9U, -830,    0, "task9_backward_to_area_830mm"),
     FLOW_DWELL(9U,                 "task9_center_hold_for_stack_ring_1"),
     FLOW_DWELL(9U,                 "task9_center_hold_for_stack_ring_2"),
     FLOW_DWELL(9U,                 "task9_center_hold_for_stack_ring_3"),
 
-    FLOW_LINEAR(10U,    0, 1900, "task10_left_1900mm"),
+    FLOW_LINEAR(10U,    0, 1870, "task10_left_1870mm"),
     FLOW_RETURN_LONGITUDINAL(10U,  "task10_return_selected_zone")
 };
 
@@ -604,11 +604,11 @@ static chassis_full_flow_test_result_t flow_start_action(
             return CHASSIS_FULL_FLOW_TEST_OK;
 
         case FLOW_TEST_ACTION_START_LATERAL:
-            y_mm = (test->start_zone == START_ZONE_2) ? -1050 : 1050;
+            y_mm = (test->start_zone == START_ZONE_2) ? -1020 : 1020;
             return flow_start_linear(test, 0, y_mm, now_ms);
 
         case FLOW_TEST_ACTION_RETURN_LONGITUDINAL:
-            x_mm = (test->start_zone == START_ZONE_2) ? 980 : -1050;
+            x_mm = (test->start_zone == START_ZONE_2) ? 950 : -1020;
             return flow_start_linear(test, x_mm, 0, now_ms);
 
         case FLOW_TEST_ACTION_ARM:

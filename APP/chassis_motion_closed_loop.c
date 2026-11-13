@@ -8,7 +8,6 @@
 #include <string.h>
 
 #define MOTION_DEG_TO_RAD       0.01745329251994329577f
-#define MOTION_ROTATE_SPEED_SCALE 3.0f
 
 typedef struct
 {
@@ -17,12 +16,35 @@ typedef struct
     heading_hold_controller_t heading;
     chassis_motion_service_fn service_callback;
     void *service_context;
+    float startup_yaw_deg;
     float target_yaw_deg;
     uint8_t initialized;
+    uint8_t startup_yaw_valid;
     uint8_t target_valid;
 } chassis_motion_context_t;
 
 static chassis_motion_context_t s_motion;
+
+static chassis_motion_result_t motion_correct_heading(void);
+
+static void motion_set_default_heading_profile(void)
+{
+    s_motion.heading.config.kp_rad_s_per_rad =
+        HEADING_HOLD_DEFAULT_KP_RAD_S_PER_RAD;
+    s_motion.heading.config.max_correction_rad_s =
+        HEADING_HOLD_DEFAULT_MAX_CORRECTION_RAD_S;
+    s_motion.heading.config.deadband_deg = HEADING_HOLD_DEFAULT_DEADBAND_DEG;
+}
+
+static void motion_set_arm_heading_profile(void)
+{
+    s_motion.heading.config.kp_rad_s_per_rad =
+        CHASSIS_ODOMETRY_ARM_HEADING_KP_RAD_S_PER_RAD;
+    s_motion.heading.config.max_correction_rad_s =
+        CHASSIS_ODOMETRY_ARM_HEADING_MAX_CORRECTION_RAD_S;
+    s_motion.heading.config.deadband_deg =
+        CHASSIS_ODOMETRY_ARM_HEADING_DEADBAND_DEG;
+}
 
 static void motion_service_background(uint32_t now_ms)
 {
@@ -61,6 +83,21 @@ static float motion_wrap_deg(float value)
         value += 360.0f;
     }
     return value;
+}
+
+static chassis_motion_result_t motion_capture_startup_heading_from_data(
+    const hwt101ct_data_t *yaw_data)
+{
+    if ((yaw_data == NULL) || (yaw_data->yaw_valid == 0U))
+    {
+        return CHASSIS_MOTION_SENSOR_ERROR;
+    }
+
+    s_motion.startup_yaw_deg = yaw_data->yaw_deg;
+    s_motion.startup_yaw_valid = 1U;
+    s_motion.target_yaw_deg = s_motion.startup_yaw_deg;
+    s_motion.target_valid = 1U;
+    return CHASSIS_MOTION_OK;
 }
 
 static uint32_t motion_age_ms(uint32_t now_ms, uint32_t update_ms)
@@ -170,10 +207,17 @@ static float motion_profile_speed(uint32_t elapsed_ms,
     return braking_speed;
 }
 
-static chassis_motion_result_t motion_stop_stable(void)
+static chassis_motion_result_t motion_stop_stable_with_config(
+    uint32_t stable_ms,
+    uint32_t control_period_ms)
 {
     uint32_t start_ms = HAL_GetTick();
     mecanum_encoder_velocity_t velocity;
+
+    if (control_period_ms == 0U)
+    {
+        return CHASSIS_MOTION_INVALID_PARAM;
+    }
 
     for (;;)
     {
@@ -207,7 +251,7 @@ static chassis_motion_result_t motion_stop_stable(void)
              CHASSIS_ODOMETRY_STOP_SPEED_MPS) &&
             (motion_abs(velocity.wz_rad_s) <= 0.05f) &&
             ((HAL_GetTick() - start_ms) >=
-             CHASSIS_ODOMETRY_STOP_STABLE_MS))
+             stable_ms))
         {
             return CHASSIS_MOTION_OK;
         }
@@ -216,8 +260,15 @@ static chassis_motion_result_t motion_stop_stable(void)
         {
             return CHASSIS_MOTION_TIMEOUT;
         }
-        HAL_Delay(CHASSIS_ODOMETRY_CONTROL_PERIOD_MS);
+        HAL_Delay(control_period_ms);
     }
+}
+
+static chassis_motion_result_t motion_stop_stable(void)
+{
+    return motion_stop_stable_with_config(
+        CHASSIS_ODOMETRY_STOP_STABLE_MS,
+        CHASSIS_ODOMETRY_CONTROL_PERIOD_MS);
 }
 
 static chassis_motion_result_t motion_prepare_target(
@@ -232,9 +283,17 @@ static chassis_motion_result_t motion_prepare_target(
     {
         return result;
     }
+    if (s_motion.startup_yaw_valid == 0U)
+    {
+        if (motion_capture_startup_heading_from_data(yaw_data) !=
+            CHASSIS_MOTION_OK)
+        {
+            return CHASSIS_MOTION_SENSOR_ERROR;
+        }
+    }
     if (s_motion.target_valid == 0U)
     {
-        s_motion.target_yaw_deg = yaw_data->yaw_deg;
+        s_motion.target_yaw_deg = s_motion.startup_yaw_deg;
         s_motion.target_valid = 1U;
     }
     if (rotation != 0U)
@@ -278,6 +337,7 @@ static chassis_motion_result_t motion_linear(
     float body_x;
     float body_y;
     float correction_wz;
+    chassis_motion_result_t stop_result;
     uint32_t start_ms = HAL_GetTick();
     uint32_t last_control_ms = start_ms -
                                CHASSIS_ODOMETRY_CONTROL_PERIOD_MS;
@@ -363,7 +423,13 @@ static chassis_motion_result_t motion_linear(
         remaining_m = target_m - progress_m;
         if (remaining_m <= CHASSIS_ODOMETRY_DISTANCE_TOL_M)
         {
-            return motion_stop_stable();
+            stop_result = motion_stop_stable();
+            if ((stop_result != CHASSIS_MOTION_OK) &&
+                (stop_result != CHASSIS_MOTION_TIMEOUT))
+            {
+                return stop_result;
+            }
+            return motion_correct_heading();
         }
 
         dt_s = (float)CHASSIS_ODOMETRY_CONTROL_PERIOD_MS * 0.001f;
@@ -415,7 +481,7 @@ static chassis_motion_result_t motion_rotation(int16_t yaw_delta_deg)
     hwt101ct_data_t yaw_data;
     uint32_t start_ms = HAL_GetTick();
     uint32_t last_control_ms = start_ms -
-                               CHASSIS_ODOMETRY_CONTROL_PERIOD_MS;
+                               CHASSIS_ODOMETRY_ROTATE_CONTROL_PERIOD_MS;
     int8_t direction = (yaw_delta_deg > 0) ? 1 : -1;
 
     if (yaw_delta_deg == 0)
@@ -437,14 +503,15 @@ static chassis_motion_result_t motion_rotation(int16_t yaw_delta_deg)
         float wheel_speed;
         float max_wz;
         float correction_wz;
+        chassis_motion_result_t stop_result;
         uint32_t now_ms = HAL_GetTick();
 
         motion_service_background(now_ms);
 
         if ((now_ms - last_control_ms) <
-            CHASSIS_ODOMETRY_CONTROL_PERIOD_MS)
+            CHASSIS_ODOMETRY_ROTATE_CONTROL_PERIOD_MS)
         {
-            HAL_Delay(CHASSIS_ODOMETRY_CONTROL_PERIOD_MS -
+            HAL_Delay(CHASSIS_ODOMETRY_ROTATE_CONTROL_PERIOD_MS -
                       (now_ms - last_control_ms));
             continue;
         }
@@ -465,7 +532,15 @@ static chassis_motion_result_t motion_rotation(int16_t yaw_delta_deg)
                                     yaw_data.yaw_deg);
         if (motion_abs(error_deg) <= 0.50f)
         {
-            return motion_stop_stable();
+            stop_result = motion_stop_stable_with_config(
+                CHASSIS_ODOMETRY_ROTATE_STOP_STABLE_MS,
+                CHASSIS_ODOMETRY_ROTATE_CONTROL_PERIOD_MS);
+            if ((stop_result != CHASSIS_MOTION_OK) &&
+                (stop_result != CHASSIS_MOTION_TIMEOUT))
+            {
+                return stop_result;
+            }
+            return motion_correct_heading();
         }
         geometry = s_motion.chassis->config.half_length_m +
                    s_motion.chassis->config.half_width_m;
@@ -477,7 +552,7 @@ static chassis_motion_result_t motion_rotation(int16_t yaw_delta_deg)
         wheel_speed = motion_profile_speed(last_control_ms - start_ms,
                                            remaining_m,
                                            CHASSIS_ODOMETRY_MAX_SPEED_MPS *
-                                           MOTION_ROTATE_SPEED_SCALE);
+                                           CHASSIS_ODOMETRY_ROTATE_SPEED_SCALE);
         max_wz = wheel_speed / geometry;
         if (heading_hold_controller_update(&s_motion.heading,
                                            yaw_data.yaw_deg,
@@ -487,7 +562,7 @@ static chassis_motion_result_t motion_rotation(int16_t yaw_delta_deg)
             (void)motion_stop_stable();
             return CHASSIS_MOTION_SENSOR_ERROR;
         }
-        correction_wz *= MOTION_ROTATE_SPEED_SCALE;
+        correction_wz *= CHASSIS_ODOMETRY_ROTATE_SPEED_SCALE;
         if ((motion_abs(error_deg) > 90.0f) &&
             (((correction_wz > 0.0f) ? 1 : -1) != direction))
         {
@@ -501,6 +576,117 @@ static chassis_motion_result_t motion_rotation(int16_t yaw_delta_deg)
             (void)motion_stop_stable();
             return CHASSIS_MOTION_CHASSIS_ERROR;
         }
+    }
+}
+
+static chassis_motion_result_t motion_correct_heading(void)
+{
+    uint32_t stable_start_ms = 0U;
+    uint32_t start_ms = HAL_GetTick();
+
+    if ((s_motion.startup_yaw_valid == 0U) ||
+        (s_motion.target_valid == 0U))
+    {
+        return CHASSIS_MOTION_SENSOR_ERROR;
+    }
+
+    heading_hold_controller_enable(&s_motion.heading);
+    if (heading_hold_controller_set_target(&s_motion.heading,
+                                           s_motion.target_yaw_deg) !=
+        HEADING_HOLD_CONTROLLER_OK)
+    {
+        return CHASSIS_MOTION_SENSOR_ERROR;
+    }
+
+    for (;;)
+    {
+        hwt101ct_data_t yaw_data;
+        mecanum_encoder_velocity_t velocity;
+        float error_deg;
+        float correction_wz = 0.0f;
+        uint8_t heading_aligned;
+        uint8_t velocity_valid;
+        uint32_t now_ms = HAL_GetTick();
+
+        motion_service_background(now_ms);
+        if (motion_get_yaw(&yaw_data) != CHASSIS_MOTION_OK)
+        {
+            (void)mecanum_chassis_stop(s_motion.chassis);
+            return CHASSIS_MOTION_SENSOR_ERROR;
+        }
+        error_deg = motion_wrap_deg(s_motion.target_yaw_deg -
+                                    yaw_data.yaw_deg);
+        heading_aligned =
+            (motion_abs(error_deg) <=
+             CHASSIS_ODOMETRY_HEADING_CORRECTION_TOL_DEG) ? 1U : 0U;
+        if (heading_aligned != 0U)
+        {
+            if (mecanum_chassis_set_velocity(s_motion.chassis,
+                                             0.0f,
+                                             0.0f,
+                                             0.0f) == MECANUM_MOTOR_ERROR)
+            {
+                return CHASSIS_MOTION_CHASSIS_ERROR;
+            }
+        }
+        else
+        {
+            stable_start_ms = 0U;
+            if (heading_hold_controller_update(&s_motion.heading,
+                                               yaw_data.yaw_deg,
+                                               &correction_wz) !=
+                HEADING_HOLD_CONTROLLER_OK)
+            {
+                (void)mecanum_chassis_stop(s_motion.chassis);
+                return CHASSIS_MOTION_SENSOR_ERROR;
+            }
+            if (mecanum_chassis_set_velocity(s_motion.chassis,
+                                             0.0f,
+                                             0.0f,
+                                             correction_wz) ==
+                MECANUM_MOTOR_ERROR)
+            {
+                return CHASSIS_MOTION_CHASSIS_ERROR;
+            }
+        }
+
+        velocity_valid = 0U;
+        if ((mecanum_chassis_feedback_task(s_motion.chassis) == MECANUM_OK) &&
+            (mecanum_chassis_update_encoder_velocity(s_motion.chassis) ==
+             MECANUM_OK) &&
+            (mecanum_chassis_get_encoder_velocity(s_motion.chassis,
+                                                  &velocity) == MECANUM_OK))
+        {
+            velocity_valid = 1U;
+        }
+        if ((heading_aligned != 0U) && (velocity_valid != 0U) &&
+            (motion_abs(velocity.vx_mps) <=
+             CHASSIS_ODOMETRY_STOP_SPEED_MPS) &&
+            (motion_abs(velocity.vy_mps) <=
+             CHASSIS_ODOMETRY_STOP_SPEED_MPS) &&
+            (motion_abs(velocity.wz_rad_s) <= 0.05f))
+        {
+            if (stable_start_ms == 0U)
+            {
+                stable_start_ms = now_ms;
+            }
+            if ((now_ms - stable_start_ms) >=
+                CHASSIS_ODOMETRY_STOP_STABLE_MS)
+            {
+                return CHASSIS_MOTION_OK;
+            }
+        }
+        else if (heading_aligned != 0U)
+        {
+            stable_start_ms = 0U;
+        }
+
+        if ((now_ms - start_ms) >= CHASSIS_ODOMETRY_STOP_TIMEOUT_MS)
+        {
+            (void)mecanum_chassis_stop(s_motion.chassis);
+            return CHASSIS_MOTION_TIMEOUT;
+        }
+        HAL_Delay(CHASSIS_ODOMETRY_ROTATE_CONTROL_PERIOD_MS);
     }
 }
 
@@ -534,6 +720,100 @@ chassis_motion_result_t chassis_motion_set_service_callback(
     }
     s_motion.service_callback = callback;
     s_motion.service_context = (callback != NULL) ? context : NULL;
+    return CHASSIS_MOTION_OK;
+}
+
+chassis_motion_result_t chassis_motion_lock_current_heading(void)
+{
+    hwt101ct_data_t yaw_data;
+
+    if (s_motion.initialized == 0U)
+    {
+        return CHASSIS_MOTION_INVALID_PARAM;
+    }
+    if (motion_get_yaw(&yaw_data) != CHASSIS_MOTION_OK)
+    {
+        return CHASSIS_MOTION_SENSOR_ERROR;
+    }
+
+    if (s_motion.startup_yaw_valid == 0U)
+    {
+        if (motion_capture_startup_heading_from_data(&yaw_data) !=
+            CHASSIS_MOTION_OK)
+        {
+            return CHASSIS_MOTION_SENSOR_ERROR;
+        }
+    }
+    heading_hold_controller_enable(&s_motion.heading);
+    if (heading_hold_controller_set_target(&s_motion.heading,
+                                           s_motion.target_yaw_deg) !=
+        HEADING_HOLD_CONTROLLER_OK)
+    {
+        return CHASSIS_MOTION_SENSOR_ERROR;
+    }
+    return motion_correct_heading();
+}
+
+chassis_motion_result_t chassis_motion_capture_startup_heading(void)
+{
+    hwt101ct_data_t yaw_data;
+
+    if (s_motion.initialized == 0U)
+    {
+        return CHASSIS_MOTION_INVALID_PARAM;
+    }
+    if (s_motion.startup_yaw_valid != 0U)
+    {
+        return CHASSIS_MOTION_OK;
+    }
+    if (motion_get_yaw(&yaw_data) != CHASSIS_MOTION_OK)
+    {
+        return CHASSIS_MOTION_SENSOR_ERROR;
+    }
+    return motion_capture_startup_heading_from_data(&yaw_data);
+}
+
+chassis_motion_result_t chassis_motion_get_target_heading(
+    float *target_yaw_deg)
+{
+    if ((s_motion.initialized == 0U) || (target_yaw_deg == NULL))
+    {
+        return CHASSIS_MOTION_INVALID_PARAM;
+    }
+    if ((s_motion.startup_yaw_valid == 0U) ||
+        (s_motion.target_valid == 0U))
+    {
+        return CHASSIS_MOTION_SENSOR_ERROR;
+    }
+    *target_yaw_deg = s_motion.target_yaw_deg;
+    return CHASSIS_MOTION_OK;
+}
+
+chassis_motion_result_t chassis_motion_correct_heading(void)
+{
+    if (s_motion.initialized == 0U)
+    {
+        return CHASSIS_MOTION_INVALID_PARAM;
+    }
+    return motion_correct_heading();
+}
+
+chassis_motion_result_t chassis_motion_set_heading_disturbance_compensation(
+    uint8_t enable)
+{
+    if (s_motion.initialized == 0U)
+    {
+        return CHASSIS_MOTION_INVALID_PARAM;
+    }
+
+    if (enable != 0U)
+    {
+        motion_set_arm_heading_profile();
+    }
+    else
+    {
+        motion_set_default_heading_profile();
+    }
     return CHASSIS_MOTION_OK;
 }
 

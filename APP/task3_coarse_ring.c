@@ -11,7 +11,7 @@
 #define TASK3_ARM_PREPOSITION_TIMEOUT_MS 3000U
 #define TASK3_ROTATE_SIGN              1
 #define TASK3_COARSE_RING_TOLERANCE_PIXEL       3
-#define TASK3_COARSE_RING_POSITION_SETTLE_MS   40U
+#define TASK3_COARSE_RING_POSITION_SETTLE_MS   20U
 
 static void task3_status(task3_coarse_ring_t *task,
                          uint8_t status,
@@ -73,6 +73,7 @@ static task3_coarse_ring_result_t task3_fail(
         vision_fine_adjust_abort(task->fine_adjust);
         task3_restore_fine_adjust_config(task);
         (void)chassis_motion_set_service_callback(NULL, NULL);
+        (void)chassis_motion_set_heading_disturbance_compensation(0U);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
         task->state = TASK3_COARSE_RING_FAILED;
@@ -197,6 +198,7 @@ static task3_coarse_ring_result_t task3_rotate_180(
     {
         return TASK3_COARSE_RING_INVALID_PARAM;
     }
+    /* 取料视觉阶段不做逐步航向修正，在这里通过 180 度旋转闭环统一校正。 */
     if (chassis_motion_rotate_deg(task->chassis,
                                   TASK3_COARSE_RING_ROTATE_DEG) !=
         CHASSIS_MOTION_OK)
@@ -306,7 +308,7 @@ task3_coarse_ring_result_t task3_coarse_ring_submit_qr(
     task->task_ready = 1U;
     task->state = TASK3_COARSE_RING_LEFT;
     task3_status(task, TASK3_COARSE_RING_STATUS_MOVE,
-                 "task3_left_100mm_start");
+                 "task3_left_70mm_start");
     return TASK3_COARSE_RING_OK;
 }
 
@@ -336,7 +338,7 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
                                        1);
             if (result != TASK3_COARSE_RING_OK)
             {
-                return task3_fail(task, result, "task3_left_100mm_failed");
+                return task3_fail(task, result, "task3_left_70mm_failed");
             }
             task3_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
@@ -355,11 +357,15 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
             (void)mecanum_chassis_stop(task->chassis);
             task->state = TASK3_COARSE_RING_RIGHT;
             task3_status(task, TASK3_COARSE_RING_STATUS_MOVE,
-                         "task3_right_1670mm_start");
+                         "task3_right_1640mm_start");
             return TASK3_COARSE_RING_OK;
 
         case TASK3_COARSE_RING_RIGHT:
-            if ((chassis_motion_set_service_callback(
+            if ((chassis_motion_set_heading_disturbance_compensation(1U) !=
+                 CHASSIS_MOTION_OK) ||
+                (chassis_motion_lock_current_heading() !=
+                 CHASSIS_MOTION_OK) ||
+                (chassis_motion_set_service_callback(
                      arm_controller_preposition_service,
                      task->arm) != CHASSIS_MOTION_OK) ||
                 (arm_controller_start_ground_place_preposition(
@@ -379,7 +385,7 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
                                        -1);
             if (result != TASK3_COARSE_RING_OK)
             {
-                return task3_fail(task, result, "task3_right_1670mm_failed");
+                return task3_fail(task, result, "task3_right_1640mm_failed");
             }
             task3_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);
@@ -391,6 +397,7 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
                                   TASK3_COARSE_RING_ARM_ERROR,
                                   "task3_arm_preposition_failed");
             }
+            (void)chassis_motion_set_heading_disturbance_compensation(0U);
             (void)chassis_motion_set_service_callback(NULL, NULL);
             task->state = TASK3_COARSE_RING_PREPARE_ITEM;
             return TASK3_COARSE_RING_OK;

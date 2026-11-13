@@ -149,25 +149,34 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             task->start_requested = 0U;
             task->state = TASK1_START_QR_FORWARD_FIRST;
             task1_status(task, TASK1_START_QR_STATUS_MOVE,
-                         "task1_forward_100mm_start");
+                         "task1_forward_70mm_start");
             return TASK1_START_QR_OK;
 
         case TASK1_START_QR_FORWARD_FIRST:
             result = task1_move(task, TASK1_START_QR_FORWARD_FIRST_MM, 1, 0);
             if (result != TASK1_START_QR_OK)
             {
-                return task1_fail(task, result, "task1_forward_100mm_failed");
+                return task1_fail(task, result, "task1_forward_70mm_failed");
             }
             task1_wait_move_done(task);
             task1_stop_and_settle(task);
-            task->state = TASK1_START_QR_LATERAL_AND_ZERO;
+            task->state = TASK1_START_QR_LATERAL_AND_PLATFORM_ROTATE;
             task1_status(task, TASK1_START_QR_STATUS_MOVE,
                          (task->start_zone == START_ZONE_2) ?
-                         "task1_right_1050mm_start" : "task1_left_1050mm_start");
+                         "task1_right_1070mm_start" : "task1_left_1070mm_start");
             return TASK1_START_QR_OK;
 
-        case TASK1_START_QR_LATERAL_AND_ZERO:
+        case TASK1_START_QR_LATERAL_AND_PLATFORM_ROTATE:
             /* 起点区2位于场地下侧，车头同样朝左，向车体右侧横移至二维码。 */
+            task1_status(task, TASK1_START_QR_STATUS_ARM_PLATFORM,
+                         "task1_platform_rotation_during_lateral_start");
+            if (arm_controller_start_platform_rotation_during_travel(
+                    task->arm) != ARM_CONTROLLER_OK)
+            {
+                return task1_fail(task,
+                                  TASK1_START_QR_ARM_ERROR,
+                                  "task1_platform_rotation_start_failed");
+            }
             result = task1_move(task,
                                 (task->start_zone == START_ZONE_2) ?
                                 TASK1_START_QR_RIGHT_MM : TASK1_START_QR_LEFT_MM,
@@ -177,45 +186,31 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
             {
                 return task1_fail(task, result,
                                   (task->start_zone == START_ZONE_2) ?
-                                  "task1_right_1050mm_failed" : "task1_left_1050mm_failed");
-            }
-            task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
-                         (task->start_zone == START_ZONE_2) ?
-                         "task1_arm_zero_during_right_start" : "task1_arm_zero_during_left_start");
-            if (arm_controller_zero_for_platform(task->arm) !=
-                ARM_CONTROLLER_OK)
-            {
-                return task1_fail(task,
-                                  TASK1_START_QR_ARM_ERROR,
-                                  "task1_arm_zero_failed");
+                                  "task1_right_1070mm_failed" : "task1_left_1070mm_failed");
             }
             task1_wait_move_done(task);
             task1_stop_and_settle(task);
-            task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
-                         (task->start_zone == START_ZONE_2) ?
-                         "task1_arm_zero_during_right_done" : "task1_arm_zero_during_left_done");
-            /* 调零时已直接转到平台方向，任务 2 首件无需再次等待转向。 */
-            task1_status(task, TASK1_START_QR_STATUS_ARM_ZERO,
-                         "task1_arm_zero_for_platform_done");
-            task->state = TASK1_START_QR_FORWARD_QR;
+            task1_status(task, TASK1_START_QR_STATUS_ARM_PLATFORM,
+                         "task1_platform_rotation_during_lateral_done");
+            task->state = TASK1_START_QR_FORWARD_AND_SCAN;
             return TASK1_START_QR_OK;
 
-        case TASK1_START_QR_FORWARD_QR:
+        case TASK1_START_QR_FORWARD_AND_SCAN:
             task1_status(task, TASK1_START_QR_STATUS_MOVE,
-                         "task1_forward_150mm_start");
-            /* 清掉上一轮残留码，但保留本次驶向二维码过程中的新帧。 */
+                         "task1_forward_950mm_scan_start");
+            /* 清掉上一轮残留码；UART4 在整段 950 mm 行驶期间持续接收。 */
             QR_ClearTask();
             QR_ClearError();
             result = task1_move(task, TASK1_START_QR_FORWARD_QR_MM, 1, 0);
             if (result != TASK1_START_QR_OK)
             {
-                return task1_fail(task, result, "task1_forward_150mm_failed");
+                return task1_fail(task, result, "task1_forward_950mm_failed");
             }
             task1_wait_move_done(task);
             task1_stop_and_settle(task);
             task->state = TASK1_START_QR_WAIT_QR;
             task1_status(task, TASK1_START_QR_STATUS_QR,
-                         "task1_qr_receive_enabled");
+                         "task1_qr_check_after_950mm");
             return TASK1_START_QR_OK;
 
         case TASK1_START_QR_WAIT_QR:

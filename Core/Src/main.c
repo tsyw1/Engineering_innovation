@@ -43,6 +43,7 @@
 #define APP_POSITION_REPORT_PERIOD_MS   200U
 #define APP_RUNTIME_REPORT_PERIOD_MS    500U
 #define APP_HWT101_RATE_100HZ           0x09U
+#define APP_STARTUP_HEADING_WAIT_TIMEOUT_MS 1000U
 
 static motor_bus_t s_motor_bus;
 static motor_t s_chassis_motors[MECANUM_WHEEL_COUNT];
@@ -290,6 +291,8 @@ static uint8_t app_prepare(void)
     arm_controller_result_t arm_result;
     material_tray_servo_result_t tray_result;
     hwt101ct_result_t yaw_result;
+    chassis_motion_result_t motion_result;
+    uint32_t heading_wait_start_ms;
 
     if ((screen_init(&s_screen, &huart5) != SCREEN_OK) ||
         (screen_start_receive(&s_screen) != SCREEN_OK))
@@ -334,15 +337,32 @@ static uint8_t app_prepare(void)
         app_report_error("hwt101_init_failed");
         return 0U;
     }
-    if (mecanum_chassis_enable(&s_chassis, true) != MECANUM_OK)
-    {
-        app_report_error("chassis_enable_failed");
-        return 0U;
-    }
     if (chassis_motion_closed_loop_init(&s_chassis, &s_yaw_sensor) !=
         CHASSIS_MOTION_OK)
     {
         app_report_error("chassis_motion_init_failed");
+        return 0U;
+    }
+    /* 记录上电后的第一帧有效偏航角，整个流程都以此作为航向参考。 */
+    heading_wait_start_ms = HAL_GetTick();
+    do
+    {
+        motion_result = chassis_motion_capture_startup_heading();
+        if (motion_result == CHASSIS_MOTION_OK)
+        {
+            break;
+        }
+        HAL_Delay(10U);
+    } while ((HAL_GetTick() - heading_wait_start_ms) <
+             APP_STARTUP_HEADING_WAIT_TIMEOUT_MS);
+    if (motion_result != CHASSIS_MOTION_OK)
+    {
+        app_report_error("startup_heading_reference_failed");
+        return 0U;
+    }
+    if (mecanum_chassis_enable(&s_chassis, true) != MECANUM_OK)
+    {
+        app_report_error("chassis_enable_failed");
         return 0U;
     }
 
