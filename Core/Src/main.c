@@ -37,7 +37,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define APP_MOTOR_POWER_SETTLE_MS    2000U
+#define APP_MOTOR_POWER_SETTLE_MS    1000U
 #define APP_CAN_SETTLE_MS              200U
 #define APP_MAIN_PERIOD_MS               5U
 #define APP_POSITION_REPORT_PERIOD_MS   200U

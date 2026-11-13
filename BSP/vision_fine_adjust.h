@@ -103,6 +103,8 @@ typedef struct
     vision_fine_adjust_reject_reason_t last_reject_reason;
     /* 1=后续物料采用粗略取料窗口，0=使用默认精调窗口。 */
     uint8_t coarse_pick_enabled;
+    /* 1=允许视觉误差驱动底盘，0=只观察目标是否进入容差，不移动底盘。 */
+    uint8_t motion_enabled;
     vision_fine_adjust_state_t state;
 } vision_fine_adjust_t;
 
@@ -142,6 +144,11 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
 
 /* 设置平台取料的粗略窗口；关闭后恢复默认精调容差。 */
 void vision_fine_adjust_set_coarse_pick(
+    vision_fine_adjust_t *adjust,
+    uint8_t enabled);
+
+/* 设置视觉微调是否允许向底盘发送位置修正；关闭时仅等待目标进入容差。 */
+void vision_fine_adjust_set_motion_enabled(
     vision_fine_adjust_t *adjust,
     uint8_t enabled);
 

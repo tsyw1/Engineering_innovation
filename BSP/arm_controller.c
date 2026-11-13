@@ -44,6 +44,10 @@ static arm_controller_result_t arm_controller_command_motor_absolute(
     float angle_deg,
     uint16_t speed_rpm,
     uint8_t acceleration);
+static arm_controller_result_t arm_controller_move_lift_horizontal_overlap(
+    arm_controller_t *controller,
+    float lift_absolute_angle_deg,
+    float horizontal_absolute_angle_deg);
 static arm_controller_result_t arm_controller_move_horizontal_angle(
     arm_controller_t *controller,
     float angle_deg);
@@ -440,6 +444,58 @@ static arm_controller_result_t arm_controller_move_lift_angle_timed(
         ARM_CONTROLLER_LIFT_SPEED_RPM,
         acceleration,
         wait_ms);
+}
+
+static arm_controller_result_t arm_controller_move_lift_horizontal_overlap(
+    arm_controller_t *controller,
+    float lift_absolute_angle_deg,
+    float horizontal_absolute_angle_deg)
+{
+    arm_controller_result_t result;
+    uint8_t lift_acceleration;
+    uint32_t lift_wait_ms;
+    uint32_t wait_ms;
+
+    if ((controller == NULL) || (controller->bus == NULL) ||
+        !isfinite(lift_absolute_angle_deg) ||
+        !isfinite(horizontal_absolute_angle_deg))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
+    }
+
+    /* 两轴连续下发；回物料盘动作使用独立的较短等待，完成后立即松爪。 */
+    lift_acceleration = (lift_absolute_angle_deg < 0.0f) ?
+                        ARM_CONTROLLER_LIFT_DOWN_ACCELERATION :
+                        ARM_CONTROLLER_LIFT_ACCELERATION;
+    lift_wait_ms = (lift_absolute_angle_deg < 0.0f) ?
+                   ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS :
+                   ARM_CONTROLLER_LIFT_MOVE_WAIT_MS;
+    result = arm_controller_command_motor_absolute(
+        &controller->lift_motor,
+        lift_absolute_angle_deg,
+        ARM_CONTROLLER_LIFT_SPEED_RPM,
+        lift_acceleration);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    result = arm_controller_command_motor_absolute(
+        &controller->horizontal_motor,
+        horizontal_absolute_angle_deg,
+        ARM_CONTROLLER_HORIZONTAL_SPEED_RPM,
+        ARM_CONTROLLER_HORIZONTAL_ACCELERATION);
+    if (result != ARM_CONTROLLER_OK)
+    {
+        return result;
+    }
+    wait_ms = (lift_wait_ms > ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS) ?
+              lift_wait_ms : ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS;
+    if (wait_ms > ARM_CONTROLLER_GROUND_TRAY_OVERLAP_WAIT_MS)
+    {
+        wait_ms = ARM_CONTROLLER_GROUND_TRAY_OVERLAP_WAIT_MS;
+    }
+    HAL_Delay(wait_ms);
+    return ARM_CONTROLLER_OK;
 }
 
 static arm_controller_result_t arm_controller_move_horizontal_angle(
@@ -1293,8 +1349,7 @@ arm_controller_result_t arm_controller_pick_and_place(
         return ARM_CONTROLLER_NOT_READY;
     }
 
-    /* 调用前应已由平台夹取准备函数下降到取料高度，先等待机构稳定。 */
-    HAL_Delay(ARM_CONTROLLER_PICK_POSITION_SETTLE_MS);
+    /* 视觉微调已确认到位，平台取料直接闭合夹爪，不再额外等待。 */
     gripper_result = gripper_servo_close(&controller->gripper);
     if (gripper_result != GRIPPER_SERVO_OK)
     {
@@ -1327,7 +1382,7 @@ arm_controller_result_t arm_controller_pick_and_place(
     {
         return result;
     }
-    /* Z 轴函数内部已等待配置的运动时间；再稳定 300 ms 后下降放料。 */
+    /* Z 轴函数内部已等待配置的运动时间；再稳定 100 ms 后下降放料。 */
     HAL_Delay(ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS);
 
     /* 先让 5 号下降到位，再让 6 号到物料盘绝对标定位置，到位后再松爪。 */
@@ -1500,7 +1555,7 @@ arm_controller_result_t arm_controller_pick_from_tray(
     }
     HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
-    /* 夹紧物料并保持 50 ms 后，再抬高到最高点。 */
+    /* 夹紧物料并保持 500 ms 后，再抬高到最高点。 */
     result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,
@@ -2066,11 +2121,11 @@ arm_controller_result_t arm_controller_ground_pick_to_tray(
     {
         return result;
     }
-    /* Z轴和水平轴均已确认到位，仅保留短暂的机构稳定时间。 */
+    /* Z轴和水平轴均已确认到位，再保留配置的额外稳定时间。 */
     HAL_Delay(ARM_CONTROLLER_GROUND_TRAY_WAIT_MS);
 
-    /* 先让 5 号下降到位，再让 6 号到物料盘绝对标定位置。 */
-    result = arm_controller_move_lift_horizontal_absolute_sync(
+    /* 5号和6号连续下发，等待最长动作时间后立即松爪。 */
+    result = arm_controller_move_lift_horizontal_overlap(
         controller,
         ARM_CONTROLLER_PLATFORM_TRAY_PLACE_LIFT_ANGLE_DEG,
         ARM_CONTROLLER_HORIZONTAL_TRAY_ANGLE_DEG);
@@ -2222,7 +2277,8 @@ arm_controller_result_t arm_controller_prepare_stack_pick_aligned(
 
 static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
     arm_controller_t *controller,
-    uint8_t lift_after_place)
+    uint8_t lift_after_place,
+    uint8_t ring3_clearance)
 {
     arm_controller_result_t result;
     gripper_servo_result_t gripper_result;
@@ -2231,6 +2287,10 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
         (controller->bus == NULL))
     {
         return ARM_CONTROLLER_NOT_READY;
+    }
+    if ((ring3_clearance != 0U) && (controller->target_ring != 3U))
+    {
+        return ARM_CONTROLLER_INVALID_PARAM;
     }
 
     /* 视觉对准完成时位于暂存区码垛高度，先抬升再回物料盘。 */
@@ -2288,6 +2348,27 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
     {
         return result;
     }
+
+    if (ring3_clearance != 0U)
+    {
+        /* 先越过2号环上已码好的物料，再回到3号环的正确伸出位置。 */
+        result = arm_controller_move_horizontal_angle(
+            controller,
+            ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG -
+            ARM_CONTROLLER_HORIZONTAL_RING_3_CLEARANCE_EXTRA_DEG);
+        if (result != ARM_CONTROLLER_OK)
+        {
+            return result;
+        }
+        result = arm_controller_move_horizontal_angle(
+            controller,
+            ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG);
+        if (result != ARM_CONTROLLER_OK)
+        {
+            return result;
+        }
+    }
+
     result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         ARM_CONTROLLER_STACK_PLACE_LIFT_ANGLE_DEG,
@@ -2317,13 +2398,23 @@ static arm_controller_result_t arm_controller_stack_item_from_tray_internal(
 arm_controller_result_t arm_controller_stack_item_from_tray(
     arm_controller_t *controller)
 {
-    return arm_controller_stack_item_from_tray_internal(controller, 1U);
+    return arm_controller_stack_item_from_tray_internal(controller, 1U, 0U);
 }
 
 arm_controller_result_t arm_controller_stack_item_from_tray_keep_low(
     arm_controller_t *controller)
 {
-    return arm_controller_stack_item_from_tray_internal(controller, 0U);
+    return arm_controller_stack_item_from_tray_internal(controller, 0U, 0U);
+}
+
+arm_controller_result_t arm_controller_stack_item_from_tray_with_clearance(
+    arm_controller_t *controller,
+    uint8_t lift_after_place)
+{
+    return arm_controller_stack_item_from_tray_internal(
+        controller,
+        lift_after_place,
+        1U);
 }
 
 arm_controller_result_t arm_controller_return_to_tray_direction(
@@ -2411,7 +2502,7 @@ arm_controller_result_t arm_controller_place_to_stack(
     }
     HAL_Delay(ARM_CONTROLLER_TRAY_GRIP_DELAY_MS);
 
-    /* 5. 夹紧物料并保持 50 ms 后，上升到最高点 0 度。 */
+    /* 5. 夹紧物料并保持 500 ms 后，上升到最高点 0 度。 */
     result = arm_controller_move_lift_angle(
         &controller->lift_motor,
         0.0f,

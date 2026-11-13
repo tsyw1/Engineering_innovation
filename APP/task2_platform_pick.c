@@ -6,6 +6,7 @@
 #include <string.h>
 
 #define TASK2_ARM_PREPOSITION_TIMEOUT_MS 3000U
+#define TASK2_MATERIAL_TOLERANCE_PIXEL 2000
 
 static void task2_status(task2_platform_pick_t *task,
                          uint8_t status,
@@ -27,6 +28,7 @@ static void task2_stop(task2_platform_pick_t *task)
     {
         vision_fine_adjust_abort(task->fine_adjust);
         vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
+        vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
     }
     if (task->chassis != NULL)
     {
@@ -165,13 +167,10 @@ static task2_platform_pick_result_t task2_start_item(
     task2_status(task,
                  TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
                  "task2_platform_prepare_pick_start");
-    /* 首件保持原有精调；第二、第三件只在偏差过大时才重新微调。 */
-    vision_fine_adjust_set_coarse_pick(
-        task->fine_adjust,
-        (task->item_index == 0U) ? 0U : 1U);
     if (task->item_index == 0U)
     {
         /* 首件机械臂姿态已在两段跨区行驶期间完成。 */
+        vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
         adjust_result = vision_fine_adjust_start_preselected(
             task->fine_adjust,
             VISION_UART_MODE_MATERIAL,
@@ -179,12 +178,20 @@ static task2_platform_pick_result_t task2_start_item(
     }
     else
     {
-        /* 每件物料都重新发送一次物料模式命令，确保视觉端在上一件
-         * 完成后重新开始发布当前物料帧；不能只清空旧帧后永久等待。 */
-        adjust_result = vision_fine_adjust_prepare_platform_pick_and_start(
-            task->fine_adjust,
-            task->arm,
-            task->target_ids[task->item_index]);
+        /* 后两件只禁止底盘修正，仍启动视觉等待正确物料进入2000像素容差。 */
+        if (arm_controller_prepare_platform_pick(task->arm) !=
+            ARM_CONTROLLER_OK)
+        {
+            adjust_result = VISION_FINE_ADJUST_ARM_ERROR;
+        }
+        else
+        {
+            vision_fine_adjust_set_motion_enabled(task->fine_adjust, 0U);
+            adjust_result = vision_fine_adjust_start(
+                task->fine_adjust,
+                VISION_UART_MODE_MATERIAL,
+                task->target_ids[task->item_index]);
+        }
     }
     if (adjust_result != VISION_FINE_ADJUST_OK)
     {
@@ -208,7 +215,7 @@ static task2_platform_pick_result_t task2_start_item(
                       (unsigned int)(task->item_index + 1U),
                       (unsigned int)task->target_ids[task->item_index],
                       (task->item_index == 0U) ?
-                      "fine_adjust_started" : "coarse_pick_started");
+                       "fine_adjust_started" : "vision_wait_started");
     if ((length > 0) && ((size_t)length < sizeof(event)))
     {
         task2_status(task, TASK2_PLATFORM_PICK_STATUS_FINE_ADJUST, event);
@@ -326,6 +333,7 @@ static task2_platform_pick_result_t task2_step_items(
                 /* 任务3还需要继续使用底盘，正常完成只停车不失能。 */
                 vision_fine_adjust_abort(task->fine_adjust);
                 vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
+                vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
                 (void)mecanum_chassis_stop(task->chassis);
                 task2_status(task,
                              TASK2_PLATFORM_PICK_STATUS_DONE,
@@ -383,6 +391,8 @@ task2_platform_pick_result_t task2_platform_pick_init(
     task->write_status = write_status;
 
     vision_fine_adjust_config_default(&config);
+    config.tolerance_x_pixel = TASK2_MATERIAL_TOLERANCE_PIXEL;
+    config.tolerance_y_pixel = TASK2_MATERIAL_TOLERANCE_PIXEL;
     config.timeout_ms = 0U;
     adjust_result = vision_fine_adjust_init(fine_adjust,
                                             vision_uart_get_default(),

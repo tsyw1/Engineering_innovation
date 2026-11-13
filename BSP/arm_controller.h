@@ -23,14 +23,14 @@
 #define ARM_CONTROLLER_HORIZONTAL_SPEED_RPM      70U
 #define ARM_CONTROLLER_HORIZONTAL_ACCELERATION   50U
 /* 5 号、6 号电机采用开环位置命令；命令发送后固定等待，不再等待到位标志。 */
-#define ARM_CONTROLLER_LIFT_MOVE_WAIT_MS        150U
+#define ARM_CONTROLLER_LIFT_MOVE_WAIT_MS        200U
 #define ARM_CONTROLLER_LIFT_DOWN_MOVE_WAIT_MS   500U
 #define ARM_CONTROLLER_HORIZONTAL_MOVE_WAIT_MS  500U
 #define ARM_CONTROLLER_RELEASE_DELAY_MS          300U
 #define ARM_CONTROLLER_GROUND_RELEASE_SETTLE_MS  100U
 #define ARM_CONTROLLER_STACK_RELEASE_SETTLE_MS   100U
 #define ARM_CONTROLLER_TRAY_RELEASE_DELAY_MS     100U
-#define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS      100U
+#define ARM_CONTROLLER_TRAY_OPEN_SETTLE_MS       20U
 #define ARM_CONTROLLER_GRIPPER_OPEN_DELAY_MS     100U
 #define ARM_CONTROLLER_PLATFORM_PICK_OPEN_DELAY_MS 300U
 #define ARM_CONTROLLER_TRAY_PICK_OPEN_DELAY_MS  150U
@@ -40,9 +40,10 @@
 #define ARM_CONTROLLER_TRAY_GRIP_DELAY_MS        500U
 #define ARM_CONTROLLER_RING_HORIZONTAL_SETTLE_MS 300U
 #define ARM_CONTROLLER_PLATFORM_ALIGN_SETTLE_MS  200U
-#define ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS     300U
-#define ARM_CONTROLLER_GROUND_TRAY_WAIT_MS        30U
-#define ARM_CONTROLLER_TRAY_ROTATION_SETTLE_MS  100U
+#define ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS     100U
+#define ARM_CONTROLLER_GROUND_TRAY_WAIT_MS         0U
+#define ARM_CONTROLLER_GROUND_TRAY_OVERLAP_WAIT_MS 400U
+#define ARM_CONTROLLER_TRAY_ROTATION_SETTLE_MS    50U
 #define ARM_CONTROLLER_TRAY_PICK_OPEN_ANGLE_DEG   20U
 
 /* 当前机械方向：升降电机 CCW 下降、CW 上升。
@@ -64,9 +65,9 @@
 
 #define ARM_CONTROLLER_Z_TRAY_POSITION           3830U
 #define ARM_CONTROLLER_Z_PLATFORM_POSITION       1305U
-#define ARM_CONTROLLER_Z_RING_1_POSITION         1887U
-#define ARM_CONTROLLER_Z_RING_2_POSITION         1305U
-#define ARM_CONTROLLER_Z_RING_3_POSITION         700U
+#define ARM_CONTROLLER_Z_RING_1_POSITION         1892U
+#define ARM_CONTROLLER_Z_RING_2_POSITION         1315U
+#define ARM_CONTROLLER_Z_RING_3_POSITION         705U
 
 #define ARM_CONTROLLER_HORIZONTAL_ZERO_ANGLE_DEG  0.0f
 /* 物料盘水平轴使用新的绝对伸长位置。 */
@@ -74,11 +75,13 @@
 #define ARM_CONTROLLER_HORIZONTAL_RING_1_ANGLE_DEG (-128.6f)
 /* 2号靶环位于中心位置，放置时水平轴保持最里侧零位。 */
 #define ARM_CONTROLLER_HORIZONTAL_RING_2_ANGLE_DEG (0.0f)
-#define ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG (-108.4f)
+#define ARM_CONTROLLER_HORIZONTAL_RING_3_ANGLE_DEG (-104.4f)
+/* 2号环已有物料时，码3号环先额外伸出一点再回到3号环标定位置。 */
+#define ARM_CONTROLLER_HORIZONTAL_RING_3_CLEARANCE_EXTRA_DEG (10.0f)
 
 /* 兼容旧任务接口；旧的“相对 180 度”命令现在映射为绝对协议位置。 */
 #define ARM_CONTROLLER_ZERO_Z_ANGLE_DEG            0.0f
-#define ARM_CONTROLLER_ZERO_Z_AFTER_HOME_DEG       3830.0f
+#define ARM_CONTROLLER_ZERO_Z_AFTER_HOME_DEG       3820.0f
 #define ARM_CONTROLLER_PICK_LIFT_ANGLE_DEG         ARM_CONTROLLER_PLATFORM_PICK_LIFT_ANGLE_DEG
 #define ARM_CONTROLLER_GROUND_PLACE_LIFT_ANGLE_DEG ARM_CONTROLLER_GROUND_LIFT_ANGLE_DEG
 #define ARM_CONTROLLER_GROUND_PLACE_PICK_LIFT_DEG  ARM_CONTROLLER_TRAY_PICK_LIFT_ANGLE_DEG
@@ -212,7 +215,7 @@ arm_controller_result_t arm_controller_wait_preposition(
 
 /**
  * 从已经准备好的平台取料并放到物料盘：闭合夹爪并保持 500 ms，
- * 升降轴回到 0 度，Z 轴等待配置的运动时间后再额外稳定 300 ms，
+ * 升降轴回到 0 度，Z 轴等待配置的运动时间后再额外稳定 100 ms，
  * 先让 5 号升降轴下降到位，再让 6 号轴到绝对位置 -28.6 度，
  * 打开夹爪后，先让 5 号轴升高，再让 6 号轴绝对回到 0 度。
  */
@@ -345,6 +348,14 @@ arm_controller_result_t arm_controller_stack_item_from_tray(
  */
 arm_controller_result_t arm_controller_stack_item_from_tray_keep_low(
     arm_controller_t *controller);
+
+/**
+ * 码垛专用避让：目标为3号环且2号环已有物料时，先额外伸出水平轴，
+ * 再回到3号环标定位置后下降码垛。lift_after_place与普通接口一致。
+ */
+arm_controller_result_t arm_controller_stack_item_from_tray_with_clearance(
+    arm_controller_t *controller,
+    uint8_t lift_after_place);
 
 /** 码垛完成后逆时针旋转回物料盘方向，并保持夹爪闭合。 */
 arm_controller_result_t arm_controller_return_to_tray_direction(

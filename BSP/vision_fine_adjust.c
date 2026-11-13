@@ -267,6 +267,7 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
     adjust->vision = vision;
     adjust->chassis = chassis;
     adjust->config = *config;
+    adjust->motion_enabled = 1U;
     adjust->state = VISION_FINE_ADJUST_IDLE;
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
     return VISION_FINE_ADJUST_OK;
@@ -491,34 +492,32 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
          (vision_fine_abs((float)detection.dy) <=
           (float)tolerance_y_pixel) &&
          (target_found != 0U)) ? 1U : 0U;
-    heading_pulse = vision_fine_heading_pulse(adjust);
-    if ((visual_aligned != 0U) && (heading_pulse == 0))
+    if (visual_aligned != 0U)
     {
+        /* 正确颜色已经进入容差，立即结束视觉阶段；不再等待偏航补偿。 */
         vision_fine_stop(adjust);
         adjust->state = VISION_FINE_ADJUST_ALIGNED;
         return VISION_FINE_ADJUST_REACHED;
     }
+    if (adjust->motion_enabled == 0U)
+    {
+        /* 后续原料只等待正确物料进入2000像素窗口，不给底盘发送修正脉冲。 */
+        adjust->state = VISION_FINE_ADJUST_RUNNING;
+        return VISION_FINE_ADJUST_WAITING;
+    }
+    heading_pulse = vision_fine_heading_pulse(adjust);
 
     /* 图像 x 控制车体前后，图像 y 控制车体左右。 */
-    if (visual_aligned != 0U)
-    {
-        /* 视觉位置已对准时只修正航向，避免再次引入平移误差。 */
-        body_x_pulse = 0;
-        body_y_pulse = 0;
-    }
-    else
-    {
-        body_x_pulse = vision_fine_error_to_pulse(
-            detection.dx,
-            adjust->config.image_x_to_body_x_sign,
-            adjust->config.position_pulses_per_pixel,
-            adjust->config.max_step_pulses);
-        body_y_pulse = vision_fine_error_to_pulse(
-            detection.dy,
-            adjust->config.image_y_to_body_y_sign,
-            adjust->config.position_pulses_per_pixel,
-            adjust->config.max_step_pulses);
-    }
+    body_x_pulse = vision_fine_error_to_pulse(
+        detection.dx,
+        adjust->config.image_x_to_body_x_sign,
+        adjust->config.position_pulses_per_pixel,
+        adjust->config.max_step_pulses);
+    body_y_pulse = vision_fine_error_to_pulse(
+        detection.dy,
+        adjust->config.image_y_to_body_y_sign,
+        adjust->config.position_pulses_per_pixel,
+        adjust->config.max_step_pulses);
     wheel_pulse[MECANUM_WHEEL_FL] = body_x_pulse - body_y_pulse;
     wheel_pulse[MECANUM_WHEEL_FR] = body_x_pulse + body_y_pulse;
     wheel_pulse[MECANUM_WHEEL_RL] = body_x_pulse + body_y_pulse;
@@ -557,6 +556,16 @@ void vision_fine_adjust_set_coarse_pick(
     if (adjust != NULL)
     {
         adjust->coarse_pick_enabled = (enabled != 0U) ? 1U : 0U;
+    }
+}
+
+void vision_fine_adjust_set_motion_enabled(
+    vision_fine_adjust_t *adjust,
+    uint8_t enabled)
+{
+    if (adjust != NULL)
+    {
+        adjust->motion_enabled = (enabled != 0U) ? 1U : 0U;
     }
 }
 

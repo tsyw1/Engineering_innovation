@@ -177,9 +177,22 @@ static chassis_motion_result_t motion_stop_stable(void)
 
     for (;;)
     {
+        hwt101ct_data_t yaw_data;
+        float correction_wz = 0.0f;
+
         motion_service_background(HAL_GetTick());
+        /* 机械臂转动可能在行驶末端继续给车体施加偏航扰动；
+         * 停车稳定阶段仍保持目标航向，及时输出反向角速度修正。 */
+        if ((motion_get_yaw(&yaw_data) == CHASSIS_MOTION_OK) &&
+            (heading_hold_controller_update(&s_motion.heading,
+                                             yaw_data.yaw_deg,
+                                             &correction_wz) !=
+             HEADING_HOLD_CONTROLLER_OK))
+        {
+            correction_wz = 0.0f;
+        }
         if (mecanum_chassis_set_velocity(s_motion.chassis,
-                                         0.0f, 0.0f, 0.0f) ==
+                                         0.0f, 0.0f, correction_wz) ==
             MECANUM_MOTOR_ERROR)
         {
             return CHASSIS_MOTION_CHASSIS_ERROR;

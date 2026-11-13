@@ -282,6 +282,20 @@ static uint8_t task9_find_material_at_ring(
     return 0U;
 }
 
+static uint8_t task9_should_clear_ring3(
+    const task9_temporary_stack_t *task)
+{
+    if (task == NULL)
+    {
+        return 0U;
+    }
+
+    /* 2号环已经完成码垛后，3号环先做一次额外伸出避让。 */
+    return ((task->target_ring == 3U) &&
+            ((task->stacked_ring_mask & (1U << 1U)) != 0U)) ?
+           1U : 0U;
+}
+
 static task9_temporary_stack_result_t task9_set_tray_position(
     task9_temporary_stack_t *task)
 {
@@ -374,6 +388,7 @@ task9_temporary_stack_result_t task9_temporary_stack_submit_qr(
     task9_apply_fine_adjust_config(task);
     memcpy(&task->qr_task, qr_task, sizeof(task->qr_task));
     task->item_index = 0U;
+    task->stacked_ring_mask = 0U;
     /* 跨区行驶和首次视觉校准期间预置第1工位。 */
     if (task9_set_tray_position(task) != TASK9_TEMPORARY_STACK_OK)
     {
@@ -596,13 +611,33 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
             return TASK9_TEMPORARY_STACK_WAITING;
 
         case TASK9_TEMPORARY_STACK_PLACE_ITEM:
+        {
+            uint8_t lift_after_place;
+            uint8_t use_ring3_clearance;
+
             task9_status(task,
                          TASK9_TEMPORARY_STACK_STATUS_PLACE,
                          "task9_stack_item_start");
-            arm_result = ((task->item_index + 1U) <
-                          TASK9_TEMPORARY_STACK_ITEM_COUNT) ?
-                arm_controller_stack_item_from_tray_keep_low(task->arm) :
-                arm_controller_stack_item_from_tray(task->arm);
+            lift_after_place = ((task->item_index + 1U) <
+                                TASK9_TEMPORARY_STACK_ITEM_COUNT) ?
+                               0U : 1U;
+            use_ring3_clearance = task9_should_clear_ring3(task);
+            if (use_ring3_clearance != 0U)
+            {
+                arm_result =
+                    arm_controller_stack_item_from_tray_with_clearance(
+                        task->arm,
+                        lift_after_place);
+            }
+            else if (lift_after_place != 0U)
+            {
+                arm_result = arm_controller_stack_item_from_tray(task->arm);
+            }
+            else
+            {
+                arm_result =
+                    arm_controller_stack_item_from_tray_keep_low(task->arm);
+            }
             if (arm_result != ARM_CONTROLLER_OK)
             {
                 return task9_fail(task,
@@ -615,8 +650,11 @@ task9_temporary_stack_result_t task9_temporary_stack_step(
                                   TASK9_TEMPORARY_STACK_SCREEN_ERROR,
                                   "task9_place_count_display_failed");
             }
+            task->stacked_ring_mask |=
+                (uint8_t)(1U << (task->target_ring - 1U));
             task->state = TASK9_TEMPORARY_STACK_RETURN_TRAY;
             return TASK9_TEMPORARY_STACK_OK;
+        }
 
         case TASK9_TEMPORARY_STACK_RETURN_TRAY:
             /* 件间保持码垛高度、暂存区朝向和开爪；最后一件已抬升，再回盘关爪。 */

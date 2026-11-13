@@ -83,6 +83,8 @@ typedef struct
     uint8_t item_index;
     uint8_t current_ring;
     uint8_t target_ring;
+    /* bit0/bit1/bit2 分别表示1/2/3号环已经完成码垛。 */
+    uint8_t stacked_ring_mask;
     uint8_t task_ready;
     uint8_t fine_adjust_config_saved;
     task9_temporary_stack_state_t state;

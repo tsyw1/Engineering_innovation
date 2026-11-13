@@ -10,6 +10,7 @@
 #define TASK6_MOVE_ACCELERATION       240U
 #define TASK6_MOVE_SETTLE_MS         400U
 #define TASK6_ARM_PREPOSITION_TIMEOUT_MS 3000U
+#define TASK6_MATERIAL_TOLERANCE_PIXEL 2000
 /* 位置脉冲符号约定：+1 为逆时针，-1 为顺时针。 */
 #define TASK6_ROTATE_CLOCKWISE_SIGN   (-1)
 
@@ -32,6 +33,7 @@ static task6_platform_pick_result_t task6_fail(
     {
         vision_fine_adjust_abort(task->fine_adjust);
         vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
+        vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
         (void)chassis_motion_set_service_callback(NULL, NULL);
         (void)mecanum_chassis_stop(task->chassis);
         (void)mecanum_chassis_enable(task->chassis, false);
@@ -237,6 +239,8 @@ task6_platform_pick_result_t task6_platform_pick_init(
     task->write_status = write_status;
 
     vision_fine_adjust_config_default(&config);
+    config.tolerance_x_pixel = TASK6_MATERIAL_TOLERANCE_PIXEL;
+    config.tolerance_y_pixel = TASK6_MATERIAL_TOLERANCE_PIXEL;
     config.timeout_ms = 0U;
     adjust_result = vision_fine_adjust_init(fine_adjust,
                                             vision_uart_get_default(),
@@ -434,13 +438,10 @@ task6_platform_pick_result_t task6_platform_pick_step(
             task6_status(task,
                          TASK6_PLATFORM_PICK_STATUS_PREPARE,
                          "task6_platform_prepare_pick_start");
-            /* 首件保持原有精调；第二、第三件只在偏差过大时才重新微调。 */
-            vision_fine_adjust_set_coarse_pick(
-                task->fine_adjust,
-                (task->item_index == 0U) ? 0U : 1U);
             if (task->item_index == 0U)
             {
                 /* 首件机械臂姿态已在跨区行驶期间完成。 */
+                vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
                 prepare_result = vision_fine_adjust_start_preselected(
                     task->fine_adjust,
                     VISION_UART_MODE_MATERIAL,
@@ -448,11 +449,22 @@ task6_platform_pick_result_t task6_platform_pick_step(
             }
             else
             {
-                prepare_result =
-                    vision_fine_adjust_prepare_platform_pick_and_start(
+                /* 后两件只禁止底盘修正，仍启动视觉等待正确物料进入2000像素容差。 */
+                if (arm_controller_prepare_platform_pick(task->arm) !=
+                    ARM_CONTROLLER_OK)
+                {
+                    prepare_result = VISION_FINE_ADJUST_ARM_ERROR;
+                }
+                else
+                {
+                    vision_fine_adjust_set_motion_enabled(
                         task->fine_adjust,
-                        task->arm,
+                        0U);
+                    prepare_result = vision_fine_adjust_start(
+                        task->fine_adjust,
+                        VISION_UART_MODE_MATERIAL,
                         task->qr_task.second_batch_color[task->item_index]);
+                }
             }
             if (prepare_result != VISION_FINE_ADJUST_OK)
             {
@@ -470,8 +482,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
                                  TASK6_PLATFORM_PICK_STATUS_ERROR,
                                  event);
                 }
-                /* 首件使用行驶期间预选的模式；后续物料重新发送模式命令，
-                 * 确保视觉端重新发布当前物料帧。 */
+                /* 首件使用行驶期间预选的模式；后续物料只观察视觉，不移动底盘。 */
                 return task6_fail(task,
                                   TASK6_PLATFORM_PICK_ARM_ERROR,
                                   "task6_platform_prepare_pick_failed");
@@ -533,6 +544,7 @@ task6_platform_pick_result_t task6_platform_pick_step(
             {
                 vision_fine_adjust_abort(task->fine_adjust);
                 vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
+                vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
                 (void)mecanum_chassis_stop(task->chassis);
                 task->state = TASK6_PLATFORM_PICK_DONE;
                 task6_status(task,
