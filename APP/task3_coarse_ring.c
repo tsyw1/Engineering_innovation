@@ -357,7 +357,7 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
             (void)mecanum_chassis_stop(task->chassis);
             task->state = TASK3_COARSE_RING_RIGHT;
             task3_status(task, TASK3_COARSE_RING_STATUS_MOVE,
-                         "task3_right_1640mm_start");
+                         "task3_right_1670mm_start");
             return TASK3_COARSE_RING_OK;
 
         case TASK3_COARSE_RING_RIGHT:
@@ -385,7 +385,7 @@ task3_coarse_ring_result_t task3_coarse_ring_step(
                                        -1);
             if (result != TASK3_COARSE_RING_OK)
             {
-                return task3_fail(task, result, "task3_right_1640mm_failed");
+                return task3_fail(task, result, "task3_right_1670mm_failed");
             }
             task3_wait_motion_done(task);
             (void)mecanum_chassis_stop(task->chassis);

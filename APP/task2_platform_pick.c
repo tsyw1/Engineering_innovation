@@ -135,7 +135,7 @@ static task2_platform_pick_result_t task2_return_to_entry(
 
     task2_status(task,
                  TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
-                 "task2_backward_100mm_start");
+                 "task2_backward_70mm_start");
     if (task2_move(task,
                    TASK2_PLATFORM_PICK_FORWARD_MM,
                    -1,
@@ -147,7 +147,7 @@ static task2_platform_pick_result_t task2_return_to_entry(
     (void)mecanum_chassis_stop(task->chassis);
     task2_status(task,
                  TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
-                 "task2_backward_100mm_done");
+                 "task2_backward_70mm_done");
     return TASK2_PLATFORM_PICK_OK;
 }
 
@@ -669,7 +669,7 @@ task2_platform_pick_result_t task2_platform_pick_step(
             }
             task2_status(task,
                          TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
-                         "task2_forward_100mm_start");
+                         "task2_forward_70mm_start");
             result = task2_move(task,
                                 TASK2_PLATFORM_PICK_FORWARD_MM,
                                 1,
@@ -677,7 +677,7 @@ task2_platform_pick_result_t task2_platform_pick_step(
             if (result != TASK2_PLATFORM_PICK_OK)
             {
                 return task2_fail(task, result,
-                                  "task2_forward_100mm_failed");
+                                  "task2_forward_70mm_failed");
             }
             task2_wait_move_done(task);
             (void)mecanum_chassis_stop(task->chassis);

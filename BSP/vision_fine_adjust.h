@@ -66,6 +66,14 @@ typedef enum
     VISION_FINE_ADJUST_REJECT_TARGET
 } vision_fine_adjust_reject_reason_t;
 
+/* 视觉微调期间的控制顺序：位置 -> 航向 -> 位置复核。 */
+typedef enum
+{
+    VISION_FINE_ADJUST_SEQUENCE_POSITION = 0U,
+    VISION_FINE_ADJUST_SEQUENCE_HEADING,
+    VISION_FINE_ADJUST_SEQUENCE_POSITION_VERIFY
+} vision_fine_adjust_sequence_t;
+
 typedef struct
 {
     /* 像素误差到车体速度的比例，需结合相机安装和实车标定。 */
@@ -128,6 +136,8 @@ typedef struct
     uint8_t motion_enabled;
     /* 视觉微调期间实际下发的累计四轮相对位置脉冲。 */
     int32_t accumulated_motion_pulses[MECANUM_WHEEL_COUNT];
+    /* 防止视觉平移和航向补偿在同一阶段交替输出。 */
+    vision_fine_adjust_sequence_t sequence;
     vision_fine_adjust_state_t state;
 } vision_fine_adjust_t;
 

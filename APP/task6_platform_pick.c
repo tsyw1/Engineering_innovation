@@ -650,7 +650,25 @@ task6_platform_pick_result_t task6_platform_pick_step(
                 vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
                 vision_fine_adjust_set_heading_enabled(task->fine_adjust, 1U);
                 task6_restore_fine_adjust_defaults(task);
+                task6_status(task,
+                             TASK6_PLATFORM_PICK_STATUS_MOVE,
+                             "task6_backward_130mm_after_pick_start");
+                result = task6_move_linear(
+                    task,
+                    TASK6_PLATFORM_PICK_BACKWARD_AFTER_PICK_MM,
+                    -1,
+                    0);
+                if (result != TASK6_PLATFORM_PICK_OK)
+                {
+                    return task6_fail(task,
+                                      result,
+                                      "task6_backward_130mm_after_pick_failed");
+                }
+                task6_wait_motion_done(task);
                 (void)mecanum_chassis_stop(task->chassis);
+                task6_status(task,
+                             TASK6_PLATFORM_PICK_STATUS_MOVE,
+                             "task6_backward_130mm_after_pick_done");
                 task->state = TASK6_PLATFORM_PICK_DONE;
                 task6_status(task,
                              TASK6_PLATFORM_PICK_STATUS_DONE,

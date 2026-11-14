@@ -197,20 +197,67 @@ task1_start_qr_result_t task1_start_qr_step(task1_start_qr_t *task)
 
         case TASK1_START_QR_FORWARD_AND_SCAN:
             task1_status(task, TASK1_START_QR_STATUS_MOVE,
-                         "task1_forward_950mm_scan_start");
-            /* 清掉上一轮残留码；UART4 在整段 950 mm 行驶期间持续接收。 */
+                         "task1_forward_260mm_scan_first_start");
+            /* 清掉上一轮残留码；UART4 在两段行驶和中途停车期间持续接收。 */
             QR_ClearTask();
             QR_ClearError();
-            result = task1_move(task, TASK1_START_QR_FORWARD_QR_MM, 1, 0);
+            result = task1_move(task,
+                                TASK1_START_QR_FORWARD_SCAN_FIRST_MM,
+                                1,
+                                0);
             if (result != TASK1_START_QR_OK)
             {
-                return task1_fail(task, result, "task1_forward_950mm_failed");
+                return task1_fail(task,
+                                  result,
+                                  "task1_forward_260mm_scan_first_failed");
+            }
+            task1_wait_move_done(task);
+            task1_stop_and_settle(task);
+            task->state = TASK1_START_QR_WAIT_QR_MID;
+            task1_status(task, TASK1_START_QR_STATUS_QR,
+                         "task1_qr_wait_at_midpoint");
+            return TASK1_START_QR_OK;
+
+        case TASK1_START_QR_WAIT_QR_MID:
+            if (QR_IsErrorReady() != 0U)
+            {
+                qr_status = QR_GetError();
+                QR_ClearError();
+                length = snprintf(event,
+                                  sizeof(event),
+                                  "task1_qr_error=%u",
+                                  (unsigned int)qr_status);
+                if ((length > 0) &&
+                    ((size_t)length < sizeof(event)))
+                {
+                    task1_status(task, TASK1_START_QR_STATUS_ERROR, event);
+                }
+            }
+            if (QR_IsTaskReady() == 0U)
+            {
+                return TASK1_START_QR_WAITING;
+            }
+            task->state = TASK1_START_QR_FORWARD_SCAN_SECOND;
+            task1_status(task, TASK1_START_QR_STATUS_MOVE,
+                         "task1_forward_660mm_scan_second_start");
+            return TASK1_START_QR_OK;
+
+        case TASK1_START_QR_FORWARD_SCAN_SECOND:
+            result = task1_move(task,
+                                TASK1_START_QR_FORWARD_SCAN_SECOND_MM,
+                                1,
+                                0);
+            if (result != TASK1_START_QR_OK)
+            {
+                return task1_fail(task,
+                                  result,
+                                  "task1_forward_660mm_scan_second_failed");
             }
             task1_wait_move_done(task);
             task1_stop_and_settle(task);
             task->state = TASK1_START_QR_WAIT_QR;
             task1_status(task, TASK1_START_QR_STATUS_QR,
-                         "task1_qr_check_after_950mm");
+                         "task1_qr_check_after_920mm");
             return TASK1_START_QR_OK;
 
         case TASK1_START_QR_WAIT_QR:

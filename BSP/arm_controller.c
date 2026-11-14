@@ -1443,7 +1443,7 @@ arm_controller_result_t arm_controller_pick_and_place_with_callback(
     {
         return result;
     }
-    /* Z 轴函数内部已等待配置的运动时间；再稳定 100 ms 后在当前高度放料。 */
+    /* Z 轴函数内部已等待配置的运动时间；再稳定 150 ms 后在当前高度放料。 */
     HAL_Delay(ARM_CONTROLLER_PLATFORM_TRAY_WAIT_MS);
 
     /* 保持升降轴最高点，仅让水平轴到物料盘绝对位置后松爪。 */
@@ -2311,7 +2311,7 @@ arm_controller_result_t arm_controller_ground_pick_to_tray_with_callback(
     {
         return result;
     }
-    /* Z 轴运动完成后，与原料区放料流程一样再等待 100 ms。 */
+    /* Z 轴运动完成后，任务4/8保留原有 100 ms 稳定等待。 */
     HAL_Delay(ARM_CONTROLLER_GROUND_TRAY_WAIT_MS);
 
     /* 保持升降轴最高点，按平台回盘流程等待水平轴到位后松爪。 */

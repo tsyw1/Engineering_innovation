@@ -475,6 +475,7 @@ static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
     adjust->last_command_tick = adjust->start_tick;
     adjust->last_frame_valid = 0U;
     vision_fine_reset_stability(adjust);
+    adjust->sequence = VISION_FINE_ADJUST_SEQUENCE_POSITION;
     if (adjust->heading_adjust_enabled == 0U)
     {
         adjust->heading_target_valid = 0U;
@@ -699,15 +700,36 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
          (target_found != 0U)) ? 1U : 0U;
     /* 位置进入容差后仍需确认偏航误差已经消除；否则继续发送纯旋转脉冲。 */
     /* 关闭航向补偿时只做平移；航向由上层旋转闭环统一修正。 */
-    heading_pulse = (adjust->heading_adjust_enabled != 0U) ?
-                    vision_fine_heading_pulse(
-                        adjust,
-                        heading_tolerance_deg,
-                        heading_kp_pulses_per_deg,
-                        heading_max_correction_pulses) : 0;
-    if ((visual_aligned != 0U) && (heading_pulse == 0))
+    heading_pulse = 0;
+    if ((adjust->heading_adjust_enabled != 0U) &&
+        (adjust->sequence == VISION_FINE_ADJUST_SEQUENCE_POSITION) &&
+        (visual_aligned != 0U))
     {
-        /* 位置和航向均进入容差后才结束视觉阶段。 */
+        /* 位置先到位，再独立完成航向矫正。 */
+        adjust->sequence = VISION_FINE_ADJUST_SEQUENCE_HEADING;
+    }
+    if ((adjust->heading_adjust_enabled != 0U) &&
+        (adjust->sequence == VISION_FINE_ADJUST_SEQUENCE_HEADING))
+    {
+        heading_pulse = vision_fine_heading_pulse(
+            adjust,
+            heading_tolerance_deg,
+            heading_kp_pulses_per_deg,
+            heading_max_correction_pulses);
+        if (heading_pulse == 0)
+        {
+            /* 航向进入 0.05 度死区；下一帧重新检查视觉位置。 */
+            adjust->sequence =
+                VISION_FINE_ADJUST_SEQUENCE_POSITION_VERIFY;
+            adjust->state = VISION_FINE_ADJUST_RUNNING;
+            return VISION_FINE_ADJUST_WAITING;
+        }
+    }
+    else if ((adjust->sequence ==
+              VISION_FINE_ADJUST_SEQUENCE_POSITION_VERIFY) &&
+             (visual_aligned != 0U))
+    {
+        /* 航向修正可能带来像素偏移，复核后才结束视觉阶段。 */
         vision_fine_stop(adjust);
         adjust->state = VISION_FINE_ADJUST_ALIGNED;
         return VISION_FINE_ADJUST_REACHED;
@@ -719,7 +741,7 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     }
     if (heading_pulse != 0)
     {
-        /* 先单独完成航向矫正，航向进入容差后下一帧才允许位置矫正。 */
+        /* 航向阶段只发送旋转脉冲，不叠加视觉平移脉冲。 */
         body_x_pulse = 0;
         body_y_pulse = 0;
     }
