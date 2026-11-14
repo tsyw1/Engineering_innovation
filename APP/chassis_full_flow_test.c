@@ -108,14 +108,15 @@ static const flow_test_action_t s_flow_actions[] =
     FLOW_LINEAR(1U,  120,    0, "task1_forward_qr_120mm"),
     FLOW_DWELL(1U,                 "task1_fixed_qr_point"),
 
-    FLOW_LINEAR(2U,  770,    0, "task2_forward_770mm"),
-    FLOW_LINEAR(2U,    0, -850, "task2_right_850mm"),
+    FLOW_LINEAR(2U,    0, -920, "task2_right_920mm"),
+    FLOW_LINEAR(2U,  100,    0, "task2_forward_100mm"),
     FLOW_ARM(2U, FLOW_TEST_ARM_PLATFORM_PICK_ALIGNED, 0U, 0U,
              "task2_platform_pick_item_1"),
     FLOW_ARM(2U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 1U,
              "task2_platform_pick_item_2"),
     FLOW_ARM(2U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 2U,
              "task2_platform_pick_item_3"),
+    FLOW_LINEAR(2U, -100,    0, "task2_backward_100mm"),
 
     FLOW_LINEAR(3U,    0,   70, "task3_left_70mm"),
     FLOW_ROTATE(3U,  180,         "task3_rotate_ccw_180deg"),
@@ -148,7 +149,7 @@ static const flow_test_action_t s_flow_actions[] =
 
     FLOW_LINEAR(6U, -830,    0, "task6_backward_from_ring_2_830mm"),
     FLOW_ROTATE(6U,  -90,         "task6_rotate_cw_90deg"),
-    FLOW_LINEAR(6U, -820,    0, "task6_backward_to_area_820mm"),
+    FLOW_LINEAR(6U, -720,    0, "task6_backward_to_area_720mm"),
     FLOW_ARM(6U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 0U,
              "task6_platform_pick_item_1"),
     FLOW_ARM(6U, FLOW_TEST_ARM_PLATFORM_PICK, 0U, 1U,

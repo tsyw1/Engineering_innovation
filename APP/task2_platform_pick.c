@@ -13,6 +13,8 @@
 #define TASK2_MATERIAL_TOLERANCE_Y_PIXEL 70
 #define TASK2_FINE_ADJUST_POSITION_PULSES_PER_PIXEL 0.32f
 #define TASK2_FINE_ADJUST_MAX_STEP_PULSES 64U
+#define TASK2_RETURN_POSITION_SPEED_RPM 180U
+#define TASK2_RETURN_POSITION_SETTLE_MS 120U
 
 static void task2_apply_material_pick_tolerance(
     task2_platform_pick_t *task)
@@ -57,6 +59,96 @@ static void task2_restore_fine_adjust_defaults(
     task->fine_adjust->config.max_step_pulses =
         VISION_FINE_ADJUST_DEFAULT_MAX_STEP_PULSES;
     vision_fine_adjust_set_target_match_required(task->fine_adjust, 0U);
+}
+
+static void task2_status(task2_platform_pick_t *task,
+                         uint8_t status,
+                         const char *event);
+
+static task2_platform_pick_result_t task2_move(
+    task2_platform_pick_t *task,
+    uint16_t distance_mm,
+    int8_t body_x_sign,
+    int8_t body_y_sign);
+
+static void task2_wait_move_done(const task2_platform_pick_t *task);
+
+static task2_platform_pick_result_t task2_return_to_entry(
+    task2_platform_pick_t *task)
+{
+    int32_t pulses[MECANUM_WHEEL_COUNT];
+    int32_t reverse_pulses[MECANUM_WHEEL_COUNT];
+    uint32_t max_pulses = 0U;
+    uint8_t index;
+    uint32_t duration_ms;
+    mecanum_result_t chassis_result;
+
+    if ((task == NULL) || (task->fine_adjust == NULL) ||
+        (task->chassis == NULL))
+    {
+        return TASK2_PLATFORM_PICK_INVALID_PARAM;
+    }
+
+    vision_fine_adjust_take_motion_pulses(task->fine_adjust, pulses);
+    vision_fine_adjust_abort(task->fine_adjust);
+    vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
+    vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
+    vision_fine_adjust_set_heading_enabled(task->fine_adjust, 1U);
+    task2_restore_fine_adjust_defaults(task);
+
+    for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+    {
+        int32_t magnitude = (pulses[index] < 0) ?
+                           -pulses[index] : pulses[index];
+        reverse_pulses[index] = -pulses[index];
+        if ((uint32_t)magnitude > max_pulses)
+        {
+            max_pulses = (uint32_t)magnitude;
+        }
+    }
+
+    if (max_pulses != 0U)
+    {
+        task2_status(task,
+                     TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
+                     "task2_reverse_fine_adjust_start");
+        chassis_result = mecanum_chassis_set_position_increment(
+            task->chassis,
+            reverse_pulses,
+            TASK2_RETURN_POSITION_SPEED_RPM,
+            task->chassis->config.acceleration);
+        if ((chassis_result != MECANUM_OK) &&
+            (chassis_result != MECANUM_CLAMPED))
+        {
+            return TASK2_PLATFORM_PICK_CHASSIS_ERROR;
+        }
+        duration_ms = (max_pulses * 60000U +
+                       ((uint32_t)TASK2_RETURN_POSITION_SPEED_RPM *
+                        MECANUM_POSITION_PULSES_PER_REV) - 1U) /
+                      ((uint32_t)TASK2_RETURN_POSITION_SPEED_RPM *
+                       MECANUM_POSITION_PULSES_PER_REV);
+        HAL_Delay(duration_ms + TASK2_RETURN_POSITION_SETTLE_MS);
+        task2_status(task,
+                     TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
+                     "task2_reverse_fine_adjust_done");
+    }
+
+    task2_status(task,
+                 TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
+                 "task2_backward_100mm_start");
+    if (task2_move(task,
+                   TASK2_PLATFORM_PICK_FORWARD_MM,
+                   -1,
+                   0) != TASK2_PLATFORM_PICK_OK)
+    {
+        return TASK2_PLATFORM_PICK_CHASSIS_ERROR;
+    }
+    task2_wait_move_done(task);
+    (void)mecanum_chassis_stop(task->chassis);
+    task2_status(task,
+                 TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
+                 "task2_backward_100mm_done");
+    return TASK2_PLATFORM_PICK_OK;
 }
 
 static void task2_status(task2_platform_pick_t *task,
@@ -421,13 +513,12 @@ static task2_platform_pick_result_t task2_step_items(
             if (task->item_index >= TASK2_PLATFORM_PICK_ITEM_COUNT)
             {
                 task->item_state = TASK2_PLATFORM_PICK_ITEMS_DONE;
-                /* 任务3还需要继续使用底盘，正常完成只停车不失能。 */
-                vision_fine_adjust_abort(task->fine_adjust);
-                vision_fine_adjust_set_coarse_pick(task->fine_adjust, 0U);
-                vision_fine_adjust_set_motion_enabled(task->fine_adjust, 1U);
-                vision_fine_adjust_set_heading_enabled(task->fine_adjust, 1U);
-                task2_restore_fine_adjust_defaults(task);
-                (void)mecanum_chassis_stop(task->chassis);
+                if (task2_return_to_entry(task) != TASK2_PLATFORM_PICK_OK)
+                {
+                    return task2_fail(task,
+                                      TASK2_PLATFORM_PICK_CHASSIS_ERROR,
+                                      "task2_return_to_entry_failed");
+                }
                 task2_status(task,
                              TASK2_PLATFORM_PICK_STATUS_DONE,
                              "task2_platform_three_items_done");
@@ -546,6 +637,7 @@ task2_platform_pick_result_t task2_platform_pick_step(
             return TASK2_PLATFORM_PICK_WAITING;
 
         case TASK2_PLATFORM_PICK_RIGHT:
+            vision_fine_adjust_clear_motion_pulses(task->fine_adjust);
             task2_status(task,
                          TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
                          "task2_arm_preposition_during_right_start");
@@ -565,7 +657,7 @@ task2_platform_pick_result_t task2_platform_pick_step(
             }
             task2_status(task,
                          TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
-                         "task2_right_880mm_start");
+                         "task2_right_920mm_start");
             result = task2_move(task,
                                 TASK2_PLATFORM_PICK_RIGHT_MM,
                                 0,
@@ -573,7 +665,19 @@ task2_platform_pick_result_t task2_platform_pick_step(
             if (result != TASK2_PLATFORM_PICK_OK)
             {
                 return task2_fail(task, result,
-                                  "task2_right_880mm_failed");
+                                  "task2_right_920mm_failed");
+            }
+            task2_status(task,
+                         TASK2_PLATFORM_PICK_STATUS_PREPARE_PICK,
+                         "task2_forward_100mm_start");
+            result = task2_move(task,
+                                TASK2_PLATFORM_PICK_FORWARD_MM,
+                                1,
+                                0);
+            if (result != TASK2_PLATFORM_PICK_OK)
+            {
+                return task2_fail(task, result,
+                                  "task2_forward_100mm_failed");
             }
             task2_wait_move_done(task);
             (void)mecanum_chassis_stop(task->chassis);

@@ -350,13 +350,7 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
         (config->position_settle_ms == 0U) ||
         (config->heading_tolerance_deg < 0.0f) ||
         (config->heading_kp_pulses_per_deg < 0.0f) ||
-        (config->heading_max_age_ms == 0U) ||
-        (VISION_FINE_ADJUST_RING_COARSE_THRESHOLD_PIXEL <= 0) ||
-        (VISION_FINE_ADJUST_RING_COARSE_HEADING_KP_PULSES_PER_DEG <= 0.0f) ||
-        (VISION_FINE_ADJUST_RING_COARSE_HEADING_MAX_CORRECTION_PULSES == 0U) ||
-        (VISION_FINE_ADJUST_RING_COARSE_POSITION_PULSES_PER_PIXEL <= 0.0f) ||
-        (VISION_FINE_ADJUST_RING_COARSE_MAX_STEP_PULSES == 0U) ||
-        (VISION_FINE_ADJUST_RING_COARSE_POSITION_SPEED_RPM == 0U))
+        (config->heading_max_age_ms == 0U))
     {
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
@@ -367,7 +361,6 @@ vision_fine_adjust_result_t vision_fine_adjust_init(
     adjust->motion_enabled = 1U;
     adjust->heading_adjust_enabled = 1U;
     adjust->require_target_match = 0U;
-    adjust->phase = VISION_FINE_ADJUST_PHASE_FINE;
     adjust->state = VISION_FINE_ADJUST_IDLE;
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
     return VISION_FINE_ADJUST_OK;
@@ -436,8 +429,7 @@ static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
         return VISION_FINE_ADJUST_INVALID_PARAM;
     }
     vision_fine_stop(adjust);
-    /* 靶环直接进入快速初调，由视觉步进同时处理平移和航向；
-     * 原料取料阶段的航向修正仍延后到夹取完成后的旋转闭环。 */
+    /* 原料取料阶段的航向修正仍延后到夹取完成后的旋转闭环。 */
     if ((mode != VISION_UART_MODE_TARGET_RING) &&
         (adjust->heading_adjust_enabled != 0U) &&
         (chassis_motion_get_target_heading(&target_yaw_deg) ==
@@ -455,9 +447,6 @@ static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
     adjust->vision->current_mode = mode;
     adjust->mode = mode;
     adjust->target_id = target_id;
-    adjust->phase = (mode == VISION_UART_MODE_TARGET_RING) ?
-                    VISION_FINE_ADJUST_PHASE_COARSE :
-                    VISION_FINE_ADJUST_PHASE_FINE;
     adjust->start_tick = HAL_GetTick();
     adjust->last_command_tick = adjust->start_tick;
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
@@ -482,9 +471,6 @@ static vision_fine_adjust_result_t vision_fine_adjust_start_internal(
     }
     adjust->mode = mode;
     adjust->target_id = target_id;
-    adjust->phase = (mode == VISION_UART_MODE_TARGET_RING) ?
-                    VISION_FINE_ADJUST_PHASE_COARSE :
-                    VISION_FINE_ADJUST_PHASE_FINE;
     adjust->start_tick = HAL_GetTick();
     adjust->last_command_tick = adjust->start_tick;
     adjust->last_frame_valid = 0U;
@@ -588,20 +574,6 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
     heading_kp_pulses_per_deg = adjust->config.heading_kp_pulses_per_deg;
     heading_max_correction_pulses =
         adjust->config.heading_max_correction_pulses;
-    if ((adjust->mode == VISION_UART_MODE_TARGET_RING) &&
-        (adjust->phase == VISION_FINE_ADJUST_PHASE_COARSE))
-    {
-        position_pulses_per_pixel =
-            VISION_FINE_ADJUST_RING_COARSE_POSITION_PULSES_PER_PIXEL;
-        max_step_pulses = VISION_FINE_ADJUST_RING_COARSE_MAX_STEP_PULSES;
-        position_speed_rpm = VISION_FINE_ADJUST_RING_COARSE_POSITION_SPEED_RPM;
-        heading_tolerance_deg =
-            VISION_FINE_ADJUST_RING_COARSE_HEADING_TOLERANCE_DEG;
-        heading_kp_pulses_per_deg =
-            VISION_FINE_ADJUST_RING_COARSE_HEADING_KP_PULSES_PER_DEG;
-        heading_max_correction_pulses =
-            VISION_FINE_ADJUST_RING_COARSE_HEADING_MAX_CORRECTION_PULSES;
-    }
     if (adjust->state == VISION_FINE_ADJUST_ALIGNED)
     {
         return VISION_FINE_ADJUST_REACHED;
@@ -725,22 +697,6 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
          (vision_fine_abs((float)detection.dy) <=
           (float)tolerance_y_pixel) &&
          (target_found != 0U)) ? 1U : 0U;
-    if ((adjust->mode == VISION_UART_MODE_TARGET_RING) &&
-        (adjust->phase == VISION_FINE_ADJUST_PHASE_COARSE) &&
-        (vision_fine_abs((float)detection.dx) <=
-         (float)VISION_FINE_ADJUST_RING_COARSE_THRESHOLD_PIXEL) &&
-        (vision_fine_abs((float)detection.dy) <=
-         (float)VISION_FINE_ADJUST_RING_COARSE_THRESHOLD_PIXEL))
-    {
-        adjust->phase = VISION_FINE_ADJUST_PHASE_FINE;
-        position_pulses_per_pixel = adjust->config.position_pulses_per_pixel;
-        max_step_pulses = adjust->config.max_step_pulses;
-        position_speed_rpm = adjust->config.position_speed_rpm;
-        heading_tolerance_deg = adjust->config.heading_tolerance_deg;
-        heading_kp_pulses_per_deg = adjust->config.heading_kp_pulses_per_deg;
-        heading_max_correction_pulses =
-            adjust->config.heading_max_correction_pulses;
-    }
     /* 位置进入容差后仍需确认偏航误差已经消除；否则继续发送纯旋转脉冲。 */
     /* 关闭航向补偿时只做平移；航向由上层旋转闭环统一修正。 */
     heading_pulse = (adjust->heading_adjust_enabled != 0U) ?
@@ -810,6 +766,10 @@ vision_fine_adjust_result_t vision_fine_adjust_step(
         adjust->state = VISION_FINE_ADJUST_ERROR;
         return VISION_FINE_ADJUST_CHASSIS_ERROR;
     }
+    for (uint8_t index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+    {
+        adjust->accumulated_motion_pulses[index] += wheel_pulse[index];
+    }
     adjust->command_active = 1U;
     adjust->last_command_tick = HAL_GetTick();
     adjust->last_reject_reason = VISION_FINE_ADJUST_REJECT_NONE;
@@ -835,6 +795,38 @@ void vision_fine_adjust_set_motion_enabled(
     if (adjust != NULL)
     {
         adjust->motion_enabled = (enabled != 0U) ? 1U : 0U;
+    }
+}
+
+void vision_fine_adjust_clear_motion_pulses(
+    vision_fine_adjust_t *adjust)
+{
+    uint8_t index;
+
+    if (adjust == NULL)
+    {
+        return;
+    }
+    for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+    {
+        adjust->accumulated_motion_pulses[index] = 0;
+    }
+}
+
+void vision_fine_adjust_take_motion_pulses(
+    vision_fine_adjust_t *adjust,
+    int32_t pulses[MECANUM_WHEEL_COUNT])
+{
+    uint8_t index;
+
+    if ((adjust == NULL) || (pulses == NULL))
+    {
+        return;
+    }
+    for (index = 0U; index < MECANUM_WHEEL_COUNT; index++)
+    {
+        pulses[index] = adjust->accumulated_motion_pulses[index];
+        adjust->accumulated_motion_pulses[index] = 0;
     }
 }
 

@@ -25,15 +25,6 @@
 #define VISION_FINE_ADJUST_DEFAULT_POSITION_PULSES_PER_PIXEL  0.60f
 #define VISION_FINE_ADJUST_DEFAULT_MAX_STEP_PULSES  100U
 
-/* 靶环初调阶段：误差较大时使用更大的步长和更积极的航向补偿。 */
-#define VISION_FINE_ADJUST_RING_COARSE_THRESHOLD_PIXEL  20
-#define VISION_FINE_ADJUST_RING_COARSE_HEADING_TOLERANCE_DEG  0.30f
-#define VISION_FINE_ADJUST_RING_COARSE_HEADING_KP_PULSES_PER_DEG  4.00f
-#define VISION_FINE_ADJUST_RING_COARSE_HEADING_MAX_CORRECTION_PULSES  72U
-#define VISION_FINE_ADJUST_RING_COARSE_POSITION_PULSES_PER_PIXEL  1.20f
-#define VISION_FINE_ADJUST_RING_COARSE_MAX_STEP_PULSES  180U
-#define VISION_FINE_ADJUST_RING_COARSE_POSITION_SPEED_RPM  300U
-
 /* 首个物料平移微调开始前，连续帧误差允许的最大变化量，单位：像素。 */
 #define VISION_FINE_ADJUST_STABLE_FRAME_COUNT  3U
 #define VISION_FINE_ADJUST_STABLE_ERROR_DELTA_PIXEL  5.0f
@@ -74,12 +65,6 @@ typedef enum
     VISION_FINE_ADJUST_REJECT_AGE,
     VISION_FINE_ADJUST_REJECT_TARGET
 } vision_fine_adjust_reject_reason_t;
-
-typedef enum
-{
-    VISION_FINE_ADJUST_PHASE_FINE = 0,
-    VISION_FINE_ADJUST_PHASE_COARSE
-} vision_fine_adjust_phase_t;
 
 typedef struct
 {
@@ -141,8 +126,8 @@ typedef struct
     uint8_t coarse_pick_enabled;
     /* 1=允许视觉误差驱动底盘平移，0=禁止平移；航向策略由视觉模式决定。 */
     uint8_t motion_enabled;
-    /* 靶环模式先初调，进入误差窗口后切换到细调。 */
-    vision_fine_adjust_phase_t phase;
+    /* 视觉微调期间实际下发的累计四轮相对位置脉冲。 */
+    int32_t accumulated_motion_pulses[MECANUM_WHEEL_COUNT];
     vision_fine_adjust_state_t state;
 } vision_fine_adjust_t;
 
@@ -198,6 +183,15 @@ void vision_fine_adjust_set_coarse_pick(
 void vision_fine_adjust_set_motion_enabled(
     vision_fine_adjust_t *adjust,
     uint8_t enabled);
+
+/* 清除已累计的视觉微调位置脉冲。 */
+void vision_fine_adjust_clear_motion_pulses(
+    vision_fine_adjust_t *adjust);
+
+/* 取出并清除已累计的视觉微调位置脉冲。 */
+void vision_fine_adjust_take_motion_pulses(
+    vision_fine_adjust_t *adjust,
+    int32_t pulses[MECANUM_WHEEL_COUNT]);
 
 /* 执行机械臂准备动作后立即发送对应摄像头模式命令。 */
 vision_fine_adjust_result_t vision_fine_adjust_prepare_pick_and_start(
