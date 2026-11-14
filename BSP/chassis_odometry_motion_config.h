@@ -28,9 +28,9 @@
 #define CHASSIS_ODOMETRY_HEADING_CORRECTION_TOL_DEG 0.35f
 
 /* 原地旋转使用更高的控制频率和速度倍率，缩短旋转及停车等待时间。 */
-#define CHASSIS_ODOMETRY_ROTATE_SPEED_SCALE    3.00f
+#define CHASSIS_ODOMETRY_ROTATE_SPEED_SCALE    2.50f
 #define CHASSIS_ODOMETRY_ROTATE_CONTROL_PERIOD_MS 10U
-#define CHASSIS_ODOMETRY_ROTATE_STOP_STABLE_MS  10U
+#define CHASSIS_ODOMETRY_ROTATE_STOP_STABLE_MS   5U
 
 /* 机械臂边旋转/下降边行驶时，车体受到的偏航扰动更强，使用更积极的
  * 航向保持参数；仅在任务5/任务9的转运过程启用。 */
